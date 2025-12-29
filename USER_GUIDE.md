@@ -1,4 +1,7 @@
-# Weighbridge Management System - Complete User Guide
+````md
+# Weighbridge Management System — User Guide
+
+_Last updated: December 29, 2025 • Version: 1.1.0_
 
 ## Table of Contents
 
@@ -9,1179 +12,465 @@
 5. [API Integration Guide](#api-integration-guide)
 6. [Sample Data](#sample-data)
 7. [Troubleshooting](#troubleshooting)
+8. [Quick Reference](#quick-reference)
 
 ---
 
 ## System Overview
 
-The Weighbridge Management System consists of three main components:
+The Weighbridge Management System has three main components:
 
-1. **Desktop Application** - For weighbridge operators to perform daily weighing operations
-2. **Web Dashboard** - For administrators to manage the system, view analytics, and configure settings
-3. **RESTful API** - For external integrations with accounting systems, ERP, and third-party applications
+1. **Desktop Application (Operator App)**  
+   Used at the weighbridge station to capture weights, create transactions, and generate invoices.
+
+2. **Web Dashboard (Admin/Manager Portal)**  
+   Used by admins/managers to manage branches, users, clients, vehicles, pricing, and reports.
+
+3. **Backend REST API (Internal + External API)**  
+   Used by the desktop app and web dashboard, and optionally by third-party systems via API keys.
+
+### Key Concepts
+
+- **Branch**: A weighbridge station/location. Data is scoped by branch.
+- **Roles**:
+  - **Operator**: Uses the desktop app for weighing operations (operators are restricted to their branch).
+  - **Manager/Admin**: Uses the web dashboard for system administration (may manage multiple branches depending on your setup).
+- **Transaction workflow**:
+  - Record **FIRST weight** (Gross) → transaction becomes **pending**
+  - Record **SECOND weight** (Tare) → transaction becomes **completed** and an **invoice** is generated (if enabled/configured)
+- **Resilience**:
+  - Desktop supports **safe retry / offline-safe queue** for operations like creating/finishing transactions.
+  - Backend supports **idempotency** (prevents duplicates when the app retries due to timeouts or reconnection).
 
 ---
 
 ## Initial Setup
 
-### Step 1: Create Your First User Account
+### Requirements
 
-Since the database is fresh, you'll need to create your first admin account.
+- Node.js + npm
+- PostgreSQL (database)
+- (Optional for scale integration) USB/Serial scale drivers installed on the operator machine
 
-#### Using the Web Dashboard:
+### Step 1: Configure Environment
 
-1. **Open your browser** and navigate to the web application URL (typically `http://localhost:5173` during development)
+1. Start PostgreSQL and create the database.
+2. Apply migrations (including the idempotency migration if present).
+3. Configure backend environment variables, for example:
+   - Database connection (PostgreSQL)
+   - API port (default often `3001`)
+4. Configure frontend environment variables (web + desktop renderer), for example:
+   - `VITE_API_URL` (example: `http://localhost:3001`)
 
-2. **Click "Sign Up"** or navigate directly to the signup page
+> In production, use a real hostname for `VITE_API_URL` (e.g., `https://api.yourdomain.com`).
 
-3. **Fill in the registration form:**
-   - Email: `admin@weighbridge.com` (or your preferred email)
-   - Password: Choose a secure password (at least 6 characters long)
-   - Full Name: Your full name
-   - Role: Select "Admin"
-   - Branch: Select "Main Weighbridge Station"
+### Step 2: Create Your First User Account
 
-4. **Click "Sign Up"** to create your account
+#### Using the Web Dashboard (recommended for first admin)
 
-5. **Login** with your new credentials
+1. Open the web dashboard (development example):  
+   `http://localhost:5173`
 
-#### Using the Desktop Application:
+2. Click **Sign Up**.
 
-1. **Launch the desktop application**
+3. Fill in the registration form:
+   - Email: `admin@weighbridge.com` (or your email)
+   - Password: choose a strong password
+   - Full Name: your full name
+   - Role: **Admin**
+   - Branch: select or create your branch (depending on your setup)
 
-2. **On the login screen**, click "Create Account" or "Sign Up"
+4. Click **Sign Up**, then login.
 
-3. **Fill in the registration form:**
-   - Email: `operator@weighbridge.com`
-   - Password: Choose a secure password
-   - Full Name: Your full name
-   - Role: Select "Operator"
-   - Branch: Select "Main Weighbridge Station"
+#### Desktop Application Notes (Operators only)
 
-4. **Click "Sign Up"** to create your account
-
-5. **Login** with your new credentials
+The desktop app is designed for **operators**.  
+If you try to sign in with an Admin/Manager account, access is denied (by design).
 
 ---
 
 ## Desktop Application Guide
 
-The Desktop Application is designed for weighbridge operators working at the weighing station.
+The Desktop Application is for weighbridge operators at the station.
 
 ### Launch Instructions
 
-1. **During Development:**
-   ```bash
-   npm run dev:desktop
-   ```
+**During Development**
+```bash
+npm run dev:desktop
+````
 
-2. **Production Build:**
-   ```bash
-   npm run build:desktop
-   ```
-   Then run the built application from the `dist` folder.
+**Production Build**
+
+```bash
+npm run build:desktop
+```
 
 ### Login
 
-1. Open the desktop application
-2. Enter your email and password
-3. Click "Sign In"
+1. Launch the desktop app
+2. Enter operator email and password
+3. Click **Sign In**
 
-### Main Dashboard
-
-After logging in, you'll see the main dashboard with a sidebar navigation containing:
-
-- **Weighing** - Create new weighing transactions
-- **Monitoring** - Live monitoring of weighing operations
-- **Transactions** - View and manage transaction history
-- **Invoices** - Generate and view invoices
-- **Reports** - Generate various reports
-- **Clients** - Manage client information
-- **Vehicles** - Manage vehicle registration
-- **Pricing** - View and manage pricing rules
-- **Settings** - System and user settings
+> If login succeeds but you are not an Operator, the desktop app will deny access.
 
 ---
 
-### 1. Weighing Page (Main Operations)
+### Main Navigation (Desktop)
 
-This is where you'll spend most of your time performing weighing operations.
+Typical desktop menu includes:
 
-#### Creating a New Transaction
+* **Weighing** — record weights and generate invoices
+* **Transactions** — view recent transactions and search
+* (Other pages may exist depending on your build: Monitoring, Reports, Invoices, Clients, Vehicles, Settings)
 
-**Step 1: Select Client**
-- Click on the "Client" dropdown
-- Search for or select the client name
-- Example: Select "BuildRight Construction"
-
-**Step 2: Select Vehicle**
-- Click on the "Vehicle" dropdown
-- Vehicles are filtered by the selected client
-- Example: Select "TRK-001 (Volvo FH16)"
-
-**Step 3: Select Transaction Type**
-- Choose "Inbound" for incoming loads
-- Choose "Outbound" for outgoing loads
-- Choose "Single" for one-time weighing
-
-**Step 4: Enter Material Type**
-- Type the material being weighed
-- Example: "Gravel", "Steel", "Concrete", "Sand"
-
-**Step 5: First Weighing**
-- The weight from the weighbridge scale will be captured automatically
-- If using manual mode, enter the weight in kilograms
-- Click "Capture First Weight" button
-- Example: Enter `52000` for 52,000 kg (52 tons)
-
-**Step 6: Second Weighing (for dual-weight transactions)**
-- After the vehicle unloads/loads, return for second weighing
-- The system will prompt for the second weight
-- Click "Capture Second Weight" button
-- Example: Enter `18000` for 18,000 kg (18 tons)
-
-**Step 7: Review Net Weight**
-- The system automatically calculates: Net Weight = |First Weight - Second Weight|
-- Example: 52,000 - 18,000 = 34,000 kg (34 tons)
-
-**Step 8: Add Reference Number and Notes (Optional)**
-- Reference Number: External reference like PO number
-- Notes: Any additional information
-- Example: Reference: "REF-001", Notes: "Morning delivery"
-
-**Step 9: Complete Transaction**
-- Click "Complete Transaction" to save
-- A transaction number will be automatically generated
-- Example: "TXN-2024-000021"
-- A printable weighbridge ticket will be available
-
-#### Weighbridge Ticket
-
-After completing a transaction, you can print a ticket containing:
-- Transaction number
-- Date and time
-- Client name
-- Vehicle plate number
-- First weight, second weight, net weight
-- Material type
-- Operator name
-- Barcode for tracking
+> Note: Some pages require backend endpoints to be enabled (e.g. transactions listing).
 
 ---
 
-### 2. Monitoring Page
+## Weighing Page (Main Operations)
 
-Live monitoring view showing:
+This is the core operator workflow.
 
-**Current Active Transactions**
-- Transactions in progress (waiting for second weight)
-- Real-time weight display
-- Time elapsed since first weight
+### A) Scale Connection (Serial)
 
-**Recent Activity**
-- Last 10 completed transactions
-- Quick stats: Today's total weight, transaction count
+1. Go to **Weighing** page.
+2. Under **Scale connection**, click **Refresh ports**.
+3. Select the correct serial port (COM on Windows, `/dev/tty*` on Linux).
+4. Set serial configuration if needed:
 
-**Scale Status**
-- Connection status to weighbridge scale
-- Current weight reading
-- Calibration status
+   * Baud rate (example: 9600)
+   * Parity, data bits, stop bits
+5. Click **Connect**.
 
----
+#### Live Weight Status
 
-### 3. Transactions Page
+* **Connected**: scale is connected
+* **Receiving data**: weight data is updating
+* **No recent readings**: connected but no new weight reading recently (check cable/driver/scale)
 
-View and search transaction history.
+#### Simulation Mode
 
-#### Features:
+If you are testing without a real scale:
 
-**Search and Filter:**
-- Search by transaction number, client name, vehicle plate
-- Filter by date range
-- Filter by transaction type (Inbound/Outbound/Single)
-- Filter by status (Pending/Completed/Cancelled)
-- Filter by material type
-
-**Transaction List:**
-- Transaction number
-- Date and time
-- Client name
-- Vehicle information
-- Material type
-- Net weight
-- Status
-
-**Actions:**
-- View transaction details
-- Print weighbridge ticket
-- Edit transaction (if permitted)
-- Cancel transaction (if permitted)
-
-#### Example: Viewing Today's Transactions
-
-1. Click "Transactions" in the sidebar
-2. Set date filter to "Today"
-3. Click "Apply Filters"
-4. View list of all transactions for today
-5. Click on any transaction to see full details
+* Enter a value in the simulation input (example: `123.45`)
+* Click **Simulate**
 
 ---
 
-### 4. Invoices Page
+### B) Recording a Transaction (Two-step)
 
-Generate and manage invoices for clients.
+#### Step 1 — Select Client
 
-#### Creating an Invoice
+* Choose the client from the dropdown.
+* Operators typically see clients belonging to their branch.
 
-**Step 1: Select Client**
-- Choose the client to invoice
-- Example: "BuildRight Construction"
+#### Step 2 — Select Vehicle
 
-**Step 2: Select Date Range**
-- Choose the period for transactions to include
-- Example: Last 30 days
+* Vehicles are filtered by the selected client.
+* Choose the correct vehicle from the dropdown.
 
-**Step 3: Select Transactions**
-- The system shows all unbilled transactions for this client
-- Check the transactions to include
-- Example: Select 5 transactions from the last week
+#### Step 3 — Select Transaction Type
 
-**Step 4: Review Calculation**
-- System automatically calculates:
-  - Subtotal (based on pricing rules)
-  - Tax amount (configurable tax rate, default 10%)
-  - Total amount
-- Example: Subtotal: $2,550.00, Tax: $255.00, Total: $2,805.00
+* **Inbound** or **Outbound**
 
-**Step 5: Set Payment Terms**
-- Choose payment terms: Net 15, Net 30, Net 45, Due on Receipt
-- Set due date
-- Example: Net 30 (due in 30 days)
+#### Step 4 — Optional details
 
-**Step 6: Add Notes (Optional)**
-- Add any special notes or instructions
-- Example: "Payment via wire transfer preferred"
+* Material (example: `sand`)
+* Reference (PO / delivery ref)
+* Notes (optional)
 
-**Step 7: Generate Invoice**
-- Click "Generate Invoice"
-- Invoice number is automatically assigned
-- Example: "INV-2024-0006"
+#### Step 5 — Record FIRST Weight (Gross)
 
-**Step 8: Print or Email**
-- Print PDF invoice
-- Email directly to client
-- Export to accounting system
+* Confirm the live weight is stable and not stale.
+* Click **Record FIRST weight (Gross)**.
+* The system creates a **pending** transaction.
 
----
+**What you should see**
 
-### 5. Reports Page
+* An “Active” badge with a transaction number (example: `TXN-BR-20251229-XXXXXX`)
 
-Generate various business reports.
+#### Step 6 — Record SECOND Weight (Tare) + Create Invoice
 
-#### Available Reports:
+* When the vehicle returns, confirm the weight is stable.
+* Click **Record SECOND weight (Tare) + Create Invoice**.
+* The system completes the transaction and generates an invoice.
 
-**Transaction Summary Report**
-- Filter by date range, client, material type
-- Shows: Total transactions, total weight, average weight
-- Export to PDF or Excel
+**What you should see**
 
-**Client Activity Report**
-- Filter by client and date range
-- Shows: Transaction count, total weight, revenue generated
-- Comparison with previous periods
+* A “Completed” section showing:
 
-**Revenue Report**
-- Financial summary by date range
-- Shows: Total revenue, payments received, outstanding balance
-- Breakdown by client and material type
+  * Invoice number
+  * Total amount
+  * Pricing breakdown
 
-**Operator Performance Report**
-- Shows transactions processed by each operator
-- Average processing time
-- Accuracy metrics
+#### Download Invoice PDF
 
-**Material Type Report**
-- Volume by material type
-- Trending analysis
-- Price per ton analysis
+If the invoice PDF endpoint is enabled:
 
-#### Example: Generating a Daily Summary Report
-
-1. Click "Reports" in the sidebar
-2. Select "Transaction Summary Report"
-3. Set date range to "Today"
-4. Click "Generate Report"
-5. Review the report on screen
-6. Click "Export to PDF" or "Export to Excel"
-7. Save or print the report
+* Click **Download invoice PDF**
 
 ---
 
-### 6. Clients Page
+### C) Offline / Retry Behavior (Important)
 
-Manage client information.
+If the backend is temporarily unreachable (network drop, timeout), the desktop app will:
 
-#### Adding a New Client
+* Save the action locally (queue it)
+* Show a banner like: **Pending sync actions**
+* Auto-sync when connection returns
+* You can also click **Sync now**
 
-1. Click "Clients" in the sidebar
-2. Click "Add New Client" button
-3. Fill in the form:
-   - Company Name: "ABC Construction Co"
-   - Contact Person: "John Smith"
-   - Phone: "+1-555-1234"
-   - Email: "john@abcconstruction.com"
-   - Address: "123 Business St"
-   - Tax ID: "TAX123456"
-   - Credit Limit: 50000
-   - Payment Terms: "Net 30"
-4. Click "Save Client"
-
-#### Viewing Client Details
-
-1. Click on any client in the list
-2. View:
-   - Contact information
-   - Transaction history
-   - Outstanding invoices
-   - Total revenue
-   - Payment history
-   - Assigned vehicles
-
-#### Editing Client Information
-
-1. Click on a client
-2. Click "Edit" button
-3. Update information
-4. Click "Save Changes"
+This prevents losing work and prevents duplicate transactions (backend idempotency).
 
 ---
 
-### 7. Vehicles Page
+## Transactions Page (Desktop)
 
-Manage vehicle registration and information.
+The Transactions page shows recent transactions and supports search.
 
-#### Registering a New Vehicle
+### What it shows
 
-1. Click "Vehicles" in the sidebar
-2. Click "Add New Vehicle" button
-3. Fill in the form:
-   - Select Client: "BuildRight Construction"
-   - License Plate: "TRK-011"
-   - Vehicle Type: "Truck"
-   - Make: "Volvo"
-   - Model: "FH16"
-   - Year: 2023
-   - Tare Weight: 12000 kg
-   - Max Capacity: 40000 kg
-4. Click "Save Vehicle"
+* Transaction number
+* Client
+* Vehicle
+* Status
+* Net weight
+* Created date/time
 
-#### Vehicle Information
+### If you see “endpoint not available yet”
 
-Each vehicle entry shows:
-- License plate number
-- Vehicle type and model
-- Associated client
-- Tare weight (empty weight)
-- Maximum capacity
-- Transaction history
-- Last weighing date
+That means the backend list endpoint isn’t enabled.
+Enable:
 
----
-
-### 8. Pricing Page
-
-View pricing rules and rates.
-
-#### Pricing Information:
-
-**Pricing Tiers:**
-- Standard Pricing: $50 per weighing + $0.025 per kg
-- Premium Pricing: $75 per weighing + $0.035 per kg
-- Volume Discount: $40 per weighing + $0.020 per kg
-- Heavy Load: $100 per weighing + $0.030 per kg
-
-**Client-Specific Pricing:**
-- View which pricing tier is assigned to each client
-- View custom discounts
-- See effective dates for pricing changes
-
----
-
-### 9. Settings Page
-
-Configure system and user settings.
-
-#### Available Settings:
-
-**User Profile:**
-- Update your name
-- Change password
-- Update contact information
-
-**Weighbridge Configuration:**
-- Scale connection settings
-- COM port selection
-- Baud rate configuration
-- Auto-capture settings
-
-**Print Settings:**
-- Default printer selection
-- Ticket format customization
-- Logo upload
-
-**Display Settings:**
-- Theme selection (Light/Dark)
-- Font size
-- Language selection
+* `GET /api/transactions?limit=50`
 
 ---
 
 ## Web Dashboard Guide
 
-The Web Dashboard is designed for administrators to manage the entire system.
+The Web Dashboard is for Admins/Managers.
 
 ### Launch Instructions
 
-**During Development:**
+**During Development**
+
 ```bash
 npm run dev:web
 ```
 
-**Production Build:**
+**Production Build**
+
 ```bash
 npm run build:web
 ```
 
 ### Login
 
-1. Open your browser
-2. Navigate to the web application URL
-3. Enter admin email and password
-4. Click "Sign In"
-
-### Main Dashboard Pages
-
-After logging in, you'll see the admin dashboard with:
-
-- **Dashboard** - Overview and key metrics
-- **Branches** - Manage weighbridge locations
-- **Users** - Manage user accounts and permissions
-- **Pricing** - Configure system-wide pricing
-- **Client Analytics** - Advanced client analytics and insights
-- **Reports** - Generate comprehensive reports
-- **API Management** - Manage API keys and integrations
+1. Open the web app URL
+2. Enter admin/manager email and password
+3. Click **Sign In**
 
 ---
 
-### 1. Dashboard Page
+### Dashboard (Web)
 
-Overview of the entire system.
+Typical admin dashboard provides:
 
-**Key Metrics Display:**
-- Total transactions today
-- Total revenue today
-- Active vehicles currently weighing
-- Outstanding invoices amount
-- Month-to-date statistics
+* Transactions overview
+* Revenue overview
+* Outstanding invoices
+* Branch summaries
+* Recent activity
 
-**Recent Activity:**
-- Latest transactions across all branches
-- Recent payments received
-- Recent invoice generation
-- System alerts and notifications
-
-**Charts and Analytics:**
-- Transaction volume over time
-- Revenue trends
-- Client activity breakdown
-- Material type distribution
+(Exact widgets depend on your implementation.)
 
 ---
 
-### 2. Branches Page
+### Branches (Web)
 
-Manage multiple weighbridge locations.
+Admins can:
 
-#### Adding a New Branch
-
-1. Click "Branches" in the sidebar
-2. Click "Add New Branch" button
-3. Fill in the form:
-   - Branch Name: "North Station"
-   - Branch Code: "NORTH-WB"
-   - Address: "456 Industrial Road"
-   - Phone: "+1-555-0200"
-   - Email: "north@weighbridge.com"
-4. Click "Create Branch"
-
-#### Branch Management:
-
-- View all branches
-- Edit branch information
-- Assign users to branches
-- View branch-specific statistics
-- Activate/deactivate branches
+* Create branches
+* Assign users to branches
+* View branch-specific activity
 
 ---
 
-### 3. Users Page
+### Users (Web)
 
-Manage user accounts and permissions.
+Admins can:
 
-#### Creating a New User
+* Create and manage users
+* Assign roles and branches
+* Reset passwords / deactivate accounts (depending on implementation)
 
-1. Click "Users" in the sidebar
-2. Click "Add New User" button
-3. Fill in the form:
-   - Full Name: "Jane Operator"
-   - Email: "jane@weighbridge.com"
-   - Role: Select "Operator" or "Admin"
-   - Branch: Assign to a branch
-   - Phone: "+1-555-0150"
-4. Click "Create User"
-5. System sends invitation email to the user
+**Roles**
 
-#### User Management:
-
-**View All Users:**
-- List of all system users
-- Filter by role, branch, status
-- Search by name or email
-
-**User Details:**
-- Contact information
-- Assigned branch
-- Role and permissions
-- Login history
-- Activity log
-
-**User Actions:**
-- Edit user information
-- Change user role
-- Reset password
-- Deactivate account
-- View user activity
-
-**Roles and Permissions:**
-
-- **Admin Role:**
-  - Full system access
-  - User management
-  - Pricing configuration
-  - Branch management
-  - API key generation
-  - System configuration
-
-- **Operator Role:**
-  - Weighing operations
-  - View transactions
-  - Generate invoices
-  - View reports
-  - Manage clients and vehicles
-  - Limited settings access
+* **Admin**: full access
+* **Manager**: operational oversight (depending on policy)
+* **Operator**: station operations (desktop access)
 
 ---
 
-### 4. Pricing Page (Admin)
+### Clients & Vehicles (Web)
 
-Configure system-wide pricing rules.
+Admins/Managers can:
 
-#### Managing Pricing Tiers
-
-1. Click "Pricing" in the sidebar
-2. View existing pricing tiers
-3. Create new tier or edit existing:
-   - Tier Name: "Corporate Discount"
-   - Description: "For high-volume corporate clients"
-   - Price per Weighing: $45.00
-   - Price per KG: $0.022
-   - Minimum Charge: $45.00
-   - Effective From: Set start date
-   - Effective To: Optional end date
-4. Click "Save Pricing Tier"
-
-#### Assigning Client Pricing
-
-1. Navigate to specific client
-2. Click "Assign Pricing"
-3. Select pricing tier
-4. Add custom discount if needed (%)
-5. Set effective dates
-6. Click "Apply Pricing"
+* Add and update clients
+* Add and update vehicles
+* Link vehicles to clients
 
 ---
 
-### 5. Client Analytics Page
+### Pricing (Web)
 
-Advanced analytics and insights about clients.
+Pricing can be configured by branch using:
 
-**Available Analytics:**
+* **Pricing tiers**
+* **Client-specific pricing overrides**
 
-**Client Performance Dashboard:**
-- Top clients by revenue
-- Top clients by transaction volume
-- Client growth trends
-- Payment behavior analysis
-
-**Revenue Analysis:**
-- Revenue by client over time
-- Average transaction value by client
-- Revenue forecasting
-- Seasonal trends
-
-**Client Segmentation:**
-- High-value clients
-- Frequent users
-- Dormant clients
-- New clients
-
-**Credit Analysis:**
-- Clients approaching credit limit
-- Average days to payment
-- Outstanding balances by client
-- Payment reliability score
-
----
-
-### 6. Reports Page (Admin)
-
-Generate comprehensive system-wide reports.
-
-**Available Reports:**
-
-**Financial Reports:**
-- Profit & Loss Statement
-- Revenue by Branch
-- Outstanding Receivables Report
-- Payment Collection Report
-
-**Operational Reports:**
-- System-wide Transaction Summary
-- Branch Performance Comparison
-- Operator Productivity Report
-- Equipment Utilization Report
-
-**Compliance Reports:**
-- Audit Trail Report
-- Data Access Log
-- Calibration Records
-- Weighing Accuracy Report
-
----
-
-### 7. API Management Page
-
-Manage API keys for external integrations.
-
-#### Generating an API Key
-
-1. Click "API Management" in the sidebar
-2. Click "Generate API Key" button
-3. Fill in the form:
-   - **Key Name:** "Accounting System Integration"
-   - **Branch:** Select which branch this key accesses
-   - **Permissions:** Select allowed operations:
-     - ☑ All Permissions (*)
-     - ☐ transactions:read
-     - ☐ transactions:write
-     - ☐ clients:read
-     - ☐ clients:write
-     - ☐ invoices:read
-     - ☐ webhooks:write
-     - ☐ attendance:read
-     - ☐ attendance:write
-   - **Rate Limit:** 60 requests per minute (adjustable)
-   - **IP Whitelist:** Optional, comma-separated IPs
-     - Example: `192.168.1.100, 10.0.0.50`
-   - **Expires In:** Optional, number of days
-     - Example: 90 days
-4. Click "Generate Key"
-
-#### Important: Copy Your API Key
-
-After generation, you'll see the API key **once**:
-
-```
-wbk_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0
-```
-
-**Copy and save this key securely!** You won't be able to see it again.
-
-#### Managing API Keys
-
-**View API Keys:**
-- List of all API keys
-- Key prefix for identification
-- Associated branch
-- Permissions assigned
-- Rate limit
-- Last used date
-- Expiration status
-
-**Actions:**
-- Enable/Disable keys
-- Delete keys
-- View usage statistics
-
-#### API Audit Logs
-
-**View Logs:**
-- Click "View Logs" button
-- See all API requests:
-  - Timestamp
-  - Endpoint called
-  - HTTP method
-  - Status code
-  - IP address
-  - Response time (ms)
-
-**Filter Logs:**
-- By date range
-- By API key
-- By endpoint
-- By status code
-- By IP address
+The system uses pricing rules during transaction completion / invoice generation.
 
 ---
 
 ## API Integration Guide
 
-The Weighbridge API allows external systems to integrate with your weighbridge data.
+The system can expose external integration endpoints protected by **API keys**.
 
-### Authentication
+> Note: The exact external routes and permissions depend on your implementation.
+> This guide describes a recommended structure and expected behavior.
 
-All API requests require an API key in the header:
+### Authentication (External API)
+
+External API requests require an API key header:
 
 ```
 X-API-Key: wbk_your_api_key_here
 ```
+
+### Idempotency (Highly Recommended)
+
+For endpoints that create transactions or invoices, include:
+
+```
+Idempotency-Key: <unique-request-id>
+```
+
+This prevents duplicates if you retry due to timeouts.
 
 ---
 
-### API Endpoints
+### Common External API Endpoints (Example)
 
-#### 1. Create Transaction
+> Replace these paths with your actual external API routes if different.
 
-**Endpoint:** `POST /transactions-api`
+#### 1) Create Transaction (Two-step preferred)
 
-**Purpose:** Create a new weighing transaction from an external system.
+**Create FIRST weight**
 
-**Headers:**
-```
-X-API-Key: wbk_your_api_key_here
-Content-Type: application/json
-```
+* `POST /transactions-api`
 
-**Request Body:**
 ```json
 {
-  "client_id": "710f73ad-3eb7-4682-b6bc-ddea8cfced98",
-  "vehicle_id": "afd6ce0f-dac3-4758-b5f9-83454b980726",
-  "operator_id": "user-uuid-here",
+  "client_id": "client-uuid",
+  "vehicle_id": "vehicle-uuid",
+  "operator_id": "operator-uuid",
   "transaction_type": "inbound",
   "first_weight": 52000,
-  "second_weight": 18000,
   "material_type": "Gravel",
   "reference_number": "PO-12345",
   "notes": "Delivered from quarry"
 }
 ```
 
-**Response (201 Created):**
+**Complete transaction (SECOND weight)**
+
+* `PATCH /transactions-api/{transaction_id}/complete`
+
 ```json
 {
-  "success": true,
-  "data": {
-    "id": "transaction-uuid",
-    "transaction_number": "TXN-2024-000021",
-    "net_weight": 34000,
-    "status": "completed",
-    "created_at": "2024-12-25T10:30:00Z"
-  }
+  "second_weight": 18000
 }
 ```
+
+#### 2) Get Transaction
+
+* `GET /transactions-api/{transaction_id}`
+
+#### 3) List Clients
+
+* `GET /clients-api`
+
+#### 4) Create Client
+
+* `POST /clients-api`
+
+#### 5) List Invoices
+
+* `GET /invoices-api`
+
+#### 6) Download Invoice PDF
+
+* `GET /invoices-api/{invoice_id}/pdf`
 
 ---
 
-#### 2. Get Transaction
+### API Error Responses (External)
 
-**Endpoint:** `GET /transactions-api/{transaction_id}`
+**401 Unauthorized**
 
-**Purpose:** Retrieve details of a specific transaction.
-
-**Headers:**
-```
-X-API-Key: wbk_your_api_key_here
-```
-
-**Response (200 OK):**
 ```json
-{
-  "success": true,
-  "data": {
-    "id": "transaction-uuid",
-    "transaction_number": "TXN-2024-000021",
-    "client": {
-      "id": "client-uuid",
-      "company_name": "BuildRight Construction",
-      "contact_person": "Robert Miller"
-    },
-    "vehicle": {
-      "id": "vehicle-uuid",
-      "license_plate": "TRK-001",
-      "make": "Volvo",
-      "model": "FH16"
-    },
-    "transaction_type": "inbound",
-    "first_weight": 52000,
-    "second_weight": 18000,
-    "net_weight": 34000,
-    "material_type": "Gravel",
-    "status": "completed",
-    "created_at": "2024-12-25T10:30:00Z"
-  }
-}
+{ "error": "API key required" }
 ```
 
----
+**403 Forbidden**
 
-#### 3. List Clients
-
-**Endpoint:** `GET /clients-api`
-
-**Purpose:** Get a list of all active clients.
-
-**Headers:**
-```
-X-API-Key: wbk_your_api_key_here
-```
-
-**Response (200 OK):**
 ```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "client-uuid",
-      "company_name": "BuildRight Construction",
-      "contact_person": "Robert Miller",
-      "phone": "+1-555-0201",
-      "email": "robert@buildright.com",
-      "credit_limit": 50000,
-      "payment_terms": "Net 30"
-    }
-  ]
-}
+{ "error": "Insufficient permissions" }
 ```
 
----
+**404 Not Found**
 
-#### 4. Create Client
-
-**Endpoint:** `POST /clients-api`
-
-**Purpose:** Register a new client from an external system.
-
-**Headers:**
-```
-X-API-Key: wbk_your_api_key_here
-Content-Type: application/json
-```
-
-**Request Body:**
 ```json
-{
-  "company_name": "New Construction Co",
-  "contact_person": "Jane Smith",
-  "phone": "+1-555-9999",
-  "email": "jane@newconstruction.com",
-  "address": "789 Builder Lane",
-  "tax_id": "TAX999999",
-  "credit_limit": 30000,
-  "payment_terms": "Net 30",
-  "notes": "Premium client"
-}
+{ "error": "Resource not found" }
 ```
 
-**Response (201 Created):**
+**400 Bad Request**
+
 ```json
-{
-  "success": true,
-  "data": {
-    "id": "new-client-uuid",
-    "company_name": "New Construction Co",
-    "is_active": true,
-    "created_at": "2024-12-25T10:30:00Z"
-  }
-}
+{ "error": "Missing or invalid fields" }
 ```
 
----
+**500 Internal Server Error**
 
-#### 5. List Invoices
-
-**Endpoint:** `GET /invoices-api`
-
-**Purpose:** Get a list of invoices.
-
-**Headers:**
-```
-X-API-Key: wbk_your_api_key_here
-```
-
-**Response (200 OK):**
 ```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "invoice-uuid",
-      "invoice_number": "INV-2024-0001",
-      "client": {
-        "company_name": "BuildRight Construction"
-      },
-      "invoice_date": "2024-12-15",
-      "due_date": "2025-01-14",
-      "total_amount": 2805.00,
-      "paid_amount": 2805.00,
-      "balance": 0,
-      "status": "paid"
-    }
-  ]
-}
-```
-
----
-
-#### 6. Download Invoice PDF
-
-**Endpoint:** `GET /invoices-api/{invoice_id}/pdf`
-
-**Purpose:** Download invoice as HTML/PDF.
-
-**Headers:**
-```
-X-API-Key: wbk_your_api_key_here
-```
-
-**Response (200 OK):**
-Returns HTML content that can be converted to PDF.
-
----
-
-#### 7. Webhook - Invoice Paid
-
-**Endpoint:** `POST /webhooks-api`
-
-**Purpose:** Receive webhook notifications from accounting systems when an invoice is paid.
-
-**Headers:**
-```
-X-API-Key: wbk_your_api_key_here
-Content-Type: application/json
-```
-
-**Request Body:**
-```json
-{
-  "event_type": "invoice.paid",
-  "data": {
-    "invoice_id": "invoice-uuid",
-    "payment_amount": 2805.00,
-    "payment_method": "bank_transfer",
-    "payment_date": "2024-12-25"
-  }
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "Payment recorded successfully"
-}
-```
-
-**Supported Event Types:**
-- `invoice.paid` - Invoice payment received
-- `transaction.created` - New transaction notification
-- `client.updated` - Client information updated
-
----
-
-#### 8. Record Attendance
-
-**Endpoint:** `POST /attendance-api`
-
-**Purpose:** Record operator attendance and working hours (for timesheet integration).
-
-**Headers:**
-```
-X-API-Key: wbk_your_api_key_here
-Content-Type: application/json
-```
-
-**Request Body:**
-```json
-{
-  "operator_id": "operator-uuid",
-  "date": "2024-12-25",
-  "hours_worked": 8.5,
-  "shift_start": "08:00:00",
-  "shift_end": "17:30:00",
-  "notes": "Regular shift"
-}
-```
-
-**Response (201 Created):**
-```json
-{
-  "success": true,
-  "message": "Attendance recorded successfully",
-  "data": {
-    "operator_id": "operator-uuid",
-    "operator_name": "John Smith",
-    "date": "2024-12-25",
-    "hours_worked": 8.5,
-    "transactions_processed": 12
-  }
-}
-```
-
----
-
-#### 9. Get Attendance Summary
-
-**Endpoint:** `GET /attendance-api?operator_id={id}&date_from={date}&date_to={date}`
-
-**Purpose:** Retrieve attendance summary for operators.
-
-**Headers:**
-```
-X-API-Key: wbk_your_api_key_here
-```
-
-**Query Parameters:**
-- `operator_id` (optional): Filter by specific operator
-- `date_from` (optional): Start date (YYYY-MM-DD)
-- `date_to` (optional): End date (YYYY-MM-DD)
-
-**Response (200 OK):**
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "operator_id": "operator-uuid",
-      "operator_name": "John Smith",
-      "date": "2024-12-25",
-      "transactions_processed": 12
-    }
-  ]
-}
-```
-
----
-
-### API Error Responses
-
-**401 Unauthorized:**
-```json
-{
-  "error": "API key required"
-}
-```
-
-**403 Forbidden:**
-```json
-{
-  "error": "Insufficient permissions"
-}
-```
-
-**404 Not Found:**
-```json
-{
-  "error": "Transaction not found"
-}
-```
-
-**400 Bad Request:**
-```json
-{
-  "error": "Missing required fields"
-}
-```
-
-**500 Internal Server Error:**
-```json
-{
-  "error": "Internal server error"
-}
+{ "error": "Internal server error" }
 ```
 
 ---
 
 ## Sample Data
 
-The database has been pre-populated with sample data for testing:
+If your database seeds include demo data, you may see:
 
 ### Branch
-- **Main Weighbridge Station**
-  - Location: 123 Industrial Park Road
-  - Phone: +1-555-0100
-  - Email: main@weighbridge.com
 
-### Clients (5 companies)
-1. **BuildRight Construction**
-   - Contact: Robert Miller
-   - Phone: +1-555-0201
-   - Credit Limit: $50,000
-   - Payment Terms: Net 30
+* Main Weighbridge Station
 
-2. **SteelCorp Industries**
-   - Contact: Jennifer Davis
-   - Phone: +1-555-0202
-   - Credit Limit: $75,000
-   - Payment Terms: Net 45
+### Clients
 
-3. **GravelMax Ltd**
-   - Contact: David Wilson
-   - Phone: +1-555-0203
-   - Credit Limit: $40,000
+* Example construction / logistics companies
 
-4. **ConcreteWorks Inc**
-   - Contact: Lisa Anderson
-   - Phone: +1-555-0204
-   - Credit Limit: $60,000
+### Vehicles
 
-5. **AgriTransport Co**
-   - Contact: James Taylor
-   - Phone: +1-555-0205
-   - Credit Limit: $35,000
+* Example trucks linked to clients
 
-### Vehicles (10 trucks)
-- TRK-001 through TRK-010
-- Various makes: Volvo, Mercedes, Scania, MAN, CAT, Iveco, DAF
-- Tare weights: 11,000 - 45,000 kg
-- Max capacities: 32,000 - 91,000 kg
+### Pricing tiers
 
-### Pricing Tiers (4 tiers)
-1. Standard Pricing: $50 + $0.025/kg
-2. Premium Pricing: $75 + $0.035/kg
-3. Volume Discount: $40 + $0.020/kg
-4. Heavy Load: $100 + $0.030/kg
+* Standard / Premium / Volume Discount / Heavy Load (examples)
 
-### Invoices (5 invoices)
-- INV-2024-0001 (Paid)
-- INV-2024-0002 (Issued/Pending)
-- INV-2024-0003 (Issued/Partial payment)
-- INV-2024-0004 (Overdue)
-- INV-2024-0005 (Draft)
-
-### Payments (2 payments)
-- PAY-2024-0001: $2,805.00 (Wire Transfer)
-- PAY-2024-0002: $2,500.00 (Check)
+> If you do NOT seed data, remove this section or update it to match your actual seed scripts.
 
 ---
 
@@ -1189,135 +478,104 @@ The database has been pre-populated with sample data for testing:
 
 ### Cannot Login
 
-**Problem:** Login fails with "Invalid credentials"
+**Symptoms**
 
-**Solutions:**
-1. Verify email and password are correct
-2. Check if account has been activated
-3. Ensure you're using the correct application (desktop vs web)
-4. Reset password if forgotten
+* “Invalid credentials”
+* “Access denied”
+
+**Fix**
+
+1. Verify email/password
+2. Confirm the account exists and is active
+3. Desktop requires **Operator** role
 
 ---
 
-### Weighbridge Scale Not Connecting
+### Scale Not Connecting
 
-**Problem:** Desktop app shows "Scale Disconnected"
+**Symptoms**
 
-**Solutions:**
-1. Check physical connection to weighbridge
-2. Verify COM port settings in Settings page
-3. Ensure correct baud rate is configured
-4. Check serial port permissions
-5. Restart the desktop application
-6. Contact support if issue persists
+* Desktop shows “Disconnected”
+* No ports appear
+
+**Fix**
+
+1. Check USB cable / adapter
+2. Install correct drivers (Windows COM drivers if needed)
+3. Click **Refresh ports**
+4. Select the correct port
+5. Verify baud rate/parity settings match the scale
+6. Restart the desktop app
+
+---
+
+### “No recent readings”
+
+**Symptoms**
+
+* Connected, but the status says “No recent readings”
+
+**Fix**
+
+1. Confirm the scale is powered on and sending data
+2. Verify correct port selected
+3. Check driver stability
+4. Try reconnecting
 
 ---
 
 ### Transaction Not Saving
 
-**Problem:** Error when trying to save transaction
+**Symptoms**
 
-**Solutions:**
-1. Verify all required fields are filled:
-   - Client selected
-   - Vehicle selected
-   - Transaction type selected
-   - Weight captured
-2. Check internet connection
-3. Verify user has necessary permissions
-4. Check system logs for specific error messages
+* Error banner appears
+* Network timeout
 
----
+**Fix**
 
-### Invoice Not Generating
-
-**Problem:** Cannot generate invoice for client
-
-**Solutions:**
-1. Verify transactions exist for selected period
-2. Ensure transactions haven't already been invoiced
-3. Check client credit limit hasn't been exceeded
-4. Verify pricing rules are configured
-5. Ensure user has invoice generation permissions
+1. Confirm required fields are selected (client, vehicle)
+2. Confirm weight is not stale
+3. Check backend is running
+4. If backend is down, the desktop will queue the action. Use **Sync now** when backend returns.
 
 ---
 
-### API Key Not Working
+### Transactions Page Shows “Endpoint not available”
 
-**Problem:** API requests return 401 Unauthorized
+**Fix**
 
-**Solutions:**
-1. Verify API key is correct
-2. Check API key hasn't expired
-3. Ensure API key is active (not disabled)
-4. Verify API key has required permissions
-5. Check IP address is whitelisted (if applicable)
-6. Ensure header format is correct: `X-API-Key: your_key_here`
+* Implement/enable:
+
+  * `GET /api/transactions?limit=50`
 
 ---
 
-### Reports Not Loading
+### Invoice PDF Not Downloading
 
-**Problem:** Reports page shows loading indefinitely
+**Fix**
 
-**Solutions:**
-1. Check internet connection
-2. Refresh the page
-3. Try a smaller date range
-4. Clear browser cache
-5. Check if there's data for the selected period
-6. Try a different report type
+1. Confirm invoice exists
+2. Confirm backend PDF route is implemented:
+
+   * `GET /api/invoices/{id}/pdf`
+3. Check server logs for PDF generation errors
 
 ---
 
-## Support
+## Quick Reference
 
-For additional help or to report issues:
+### Transaction Status
 
-- Email: support@weighbridge.com
-- Phone: +1-555-0100
-- Documentation: https://docs.weighbridge.com
-- System Status: https://status.weighbridge.com
+* **pending** — first weight recorded, waiting for second weight
+* **completed** — both weights recorded, net weight final, invoice created (if enabled)
+* **cancelled** — voided (if enabled)
 
----
+### Desktop Tips
 
-## Quick Reference Card
-
-### Common Keyboard Shortcuts (Desktop App)
-
-- **Ctrl + N** - New Transaction
-- **Ctrl + S** - Save Transaction
-- **Ctrl + P** - Print Ticket
-- **Ctrl + F** - Search Transactions
-- **Ctrl + ,** - Settings
-- **Ctrl + Q** - Sign Out
-- **F5** - Refresh Current Page
-- **F11** - Toggle Fullscreen
-
-### Transaction Status Codes
-
-- **Pending** - Waiting for second weight
-- **Completed** - Both weights captured
-- **Cancelled** - Transaction voided
-
-### Invoice Status Codes
-
-- **Draft** - Not yet issued
-- **Issued** - Sent to client
-- **Paid** - Fully paid
-- **Partial** - Partially paid (via balance field)
-- **Overdue** - Past due date
-
-### Payment Methods
-
-- Cash
-- Check
-- Bank Transfer
-- Card
+* Always confirm live weight is updating before recording
+* If internet drops, you can keep working; sync later
+* Use the Transactions page to confirm records are saved
 
 ---
 
 **End of User Guide**
-
-Last Updated: December 25, 2024
-Version: 1.0.0
