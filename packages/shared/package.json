@@ -1,0 +1,20 @@
+{
+  "name": "@weighbridge/shared",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./components": "./components/index.ts",
+    "./hooks": "./hooks/index.ts",
+    "./utils": "./utils/index.ts",
+    "./types": "./types/index.ts",
+    "./lib/apiClient": "./lib/apiClient.ts"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "lucide-react": "^0.344.0"
+  }
+}

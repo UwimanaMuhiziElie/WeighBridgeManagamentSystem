@@ -1,0 +1,28 @@
+{
+  "appId": "com.weighbridge.desktop",
+  "productName": "Weighbridge Operator",
+  "directories": {
+    "output": "apps/desktop/release",
+    "buildResources": "apps/desktop/build"
+  },
+  "files": [
+    "apps/desktop/dist/**/*",
+    "apps/desktop/dist-electron/**/*"
+  ],
+  "win": {
+    "target": ["nsis"],
+    "icon": "apps/desktop/build/icon.ico"
+  },
+  "mac": {
+    "target": ["dmg"],
+    "icon": "apps/desktop/build/icon.icns"
+  },
+  "linux": {
+    "target": ["AppImage"],
+    "icon": "apps/desktop/build/icon.png"
+  },
+  "publish": {
+    "provider": "generic",
+    "url": "https://update.yourserver.com"
+  }
+}
