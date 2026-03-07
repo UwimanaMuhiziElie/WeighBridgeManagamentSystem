@@ -1,3 +1,4 @@
+// apps/web/src/pages/UsersPage.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Users, Plus, Search, AlertTriangle, Shield, UserCog, Power, Pencil, RefreshCw } from 'lucide-react';
 import { apiClient } from '@weighbridge/shared/lib/apiClient';
@@ -13,11 +14,40 @@ type SafeUser = {
   is_active: boolean;
   created_at?: string;
   updated_at?: string;
+  branch_id?: string | null;
+};
+
+type Branch = {
+  id: string;
+  name?: string;
+  branch_name?: string;
+  code?: string;
+  branch_code?: string;
+  is_active?: boolean;
 };
 
 function isForbiddenError(msg: string) {
   const m = (msg || '').toLowerCase();
   return m.includes('forbidden') || m.includes('403') || m.includes('request failed (403)');
+}
+
+function pickErrorMessage(resp: any): string | null {
+  if (!resp) return 'Request failed';
+  if (resp?.error) return String(resp.error);
+  if (resp?.success === false) return String(resp.error || resp.message || 'Request failed');
+  if (resp?.data?.success === false) return String(resp.data.error || resp.data.message || 'Request failed');
+  return null;
+}
+
+function unwrapArray<T = any>(resp: any): T[] {
+  if (!resp) return [];
+  if (resp?.error) return [];
+  const root = resp?.data ?? resp;
+  if (Array.isArray(root)) return root as T[];
+  if (Array.isArray(root?.data)) return root.data as T[];
+  if (Array.isArray(root?.rows)) return root.rows as T[];
+  if (Array.isArray(root?.data?.rows)) return root.data.rows as T[];
+  return [];
 }
 
 function roleLabel(r: Role) {
@@ -26,10 +56,29 @@ function roleLabel(r: Role) {
   return 'Operator';
 }
 
+function pickBranchName(b: Branch) {
+  return String(b.name || b.branch_name || '').trim();
+}
+function pickBranchCode(b: Branch) {
+  return String(b.code || b.branch_code || '').trim();
+}
+function branchLabel(b: Branch) {
+  const code = pickBranchCode(b);
+  const name = pickBranchName(b);
+  if (code && name) return `${code} — ${name}`;
+  return name || code || b.id;
+}
+
 export default function UsersPage() {
   const { user } = useAuth();
-  const isAdminOrManager = user?.role === 'admin' || user?.role === 'manager';
-  const isManager = user?.role === 'manager';
+
+  const meId = String((user as any)?.id || '');
+  const meRole = (user?.role || 'operator') as Role;
+  const meBranchId = String((user as any)?.branch_id || '');
+
+  const isAdminOrManager = meRole === 'admin' || meRole === 'manager';
+  const isAdmin = meRole === 'admin';
+  const isManager = meRole === 'manager';
 
   const [rows, setRows] = useState<SafeUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,6 +88,11 @@ export default function UsersPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<Role | ''>('');
   const [includeInactive, setIncludeInactive] = useState(false);
+  const [branchFilter, setBranchFilter] = useState(''); // admin only (optional)
+
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [branchesError, setBranchesError] = useState('');
 
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<SafeUser | null>(null);
@@ -47,12 +101,52 @@ export default function UsersPage() {
 
   useEffect(() => {
     mountedRef.current = true;
+    if (!isAdminOrManager) {
+      setLoading(false);
+      return () => {
+        mountedRef.current = false;
+      };
+    }
+
+    void loadBranches();
     void loadUsers();
+
     return () => {
       mountedRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roleFilter, includeInactive]);
+  }, []);
+
+  useEffect(() => {
+    if (!isAdminOrManager) return;
+    void loadUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roleFilter, includeInactive, branchFilter]);
+
+  async function loadBranches() {
+    setBranchesLoading(true);
+    setBranchesError('');
+
+    try {
+      const resp = await apiClient.get('/api/branches');
+      if (!mountedRef.current) return;
+
+      const err = pickErrorMessage(resp);
+      if (err) {
+        setBranches([]);
+        setBranchesError(err);
+        return;
+      }
+
+      setBranches(unwrapArray<Branch>(resp));
+    } catch (e: any) {
+      if (!mountedRef.current) return;
+      setBranches([]);
+      setBranchesError(String(e?.message || 'Failed to load branches'));
+    } finally {
+      if (mountedRef.current) setBranchesLoading(false);
+    }
+  }
 
   async function loadUsers() {
     setLoading(true);
@@ -62,22 +156,30 @@ export default function UsersPage() {
     const qs = new URLSearchParams();
     if (roleFilter) qs.set('role', roleFilter);
     if (includeInactive) qs.set('include_inactive', 'true');
+    if (isAdmin && branchFilter.trim()) qs.set('branch_id', branchFilter.trim()); // only admin may switch branch context
 
-    const resp = await apiClient.get<SafeUser[]>(`/api/users${qs.toString() ? `?${qs.toString()}` : ''}`);
+    try {
+      const resp = await apiClient.get(`/api/users${qs.toString() ? `?${qs.toString()}` : ''}`);
+      if (!mountedRef.current) return;
 
-    if (!mountedRef.current) return;
+      const err = pickErrorMessage(resp);
+      if (err) {
+        setRows([]);
+        setPageError(err);
+        if (isForbiddenError(err)) setAccessDenied(true);
+        return;
+      }
 
-    if ((resp as any)?.error) {
-      const msg = String((resp as any).error || 'Failed to load users');
+      setRows(unwrapArray<SafeUser>(resp));
+    } catch (e: any) {
+      if (!mountedRef.current) return;
+      const msg = String(e?.message || 'Failed to load users');
       setRows([]);
       setPageError(msg);
       if (isForbiddenError(msg)) setAccessDenied(true);
-      setLoading(false);
-      return;
+    } finally {
+      if (mountedRef.current) setLoading(false);
     }
-
-    setRows(Array.isArray(resp.data) ? resp.data : []);
-    setLoading(false);
   }
 
   const filtered = useMemo(() => {
@@ -91,23 +193,29 @@ export default function UsersPage() {
     });
   }, [rows, searchTerm]);
 
+  // PATCH 2: manager cannot DELETE; manager disables via PUT {is_active:false}
   async function deactivateUser(target: SafeUser) {
-    if (!user?.id) return;
-    if (target.id === user.id) {
+    if (!meId) return;
+
+    if (target.id === meId) {
       setPageError('You cannot disable your own account.');
       return;
     }
-    const ok = window.confirm(`Disable ${target.email}? (This is a soft delete; they will not be able to log in.)`);
+
+    const ok = window.confirm(`Disable ${target.email}? (They will not be able to log in.)`);
     if (!ok) return;
 
     setPageError('');
     setAccessDenied(false);
 
-    const resp = await apiClient.delete(`/api/users/${target.id}`);
-    if ((resp as any)?.error) {
-      const msg = String((resp as any).error || 'Failed to disable user');
-      setPageError(msg);
-      if (isForbiddenError(msg)) setAccessDenied(true);
+    const resp = isManager
+      ? await apiClient.put(`/api/users/${target.id}`, { is_active: false })
+      : await apiClient.delete(`/api/users/${target.id}`);
+
+    const err = pickErrorMessage(resp);
+    if (err) {
+      setPageError(err);
+      if (isForbiddenError(err)) setAccessDenied(true);
       return;
     }
 
@@ -119,17 +227,17 @@ export default function UsersPage() {
     setAccessDenied(false);
 
     const resp = await apiClient.put(`/api/users/${target.id}`, { is_active: true });
-    if ((resp as any)?.error) {
-      const msg = String((resp as any).error || 'Failed to reactivate user');
-      setPageError(msg);
-      if (isForbiddenError(msg)) setAccessDenied(true);
+    const err = pickErrorMessage(resp);
+
+    if (err) {
+      setPageError(err);
+      if (isForbiddenError(err)) setAccessDenied(true);
       return;
     }
 
     await loadUsers();
   }
 
-  // UI-level guard (backend is the real enforcement)
   if (!isAdminOrManager) {
     return (
       <div className="p-6">
@@ -179,6 +287,12 @@ export default function UsersPage() {
               Your account does not have permission to manage users.
             </div>
           )}
+
+          {!!branchesError && (
+            <div className="mt-3 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-lg text-sm">
+              Branch list warning: {branchesError}
+            </div>
+          )}
         </div>
 
         <button
@@ -205,33 +319,47 @@ export default function UsersPage() {
           />
         </div>
 
-        <div className="flex gap-3 items-center">
-          <select
-            value={roleFilter}
-            onChange={(e) => setRoleFilter((e.target.value || '') as any)}
-            className="px-3 py-2 border border-gray-300 rounded-lg bg-white"
-          >
+        <div className="flex gap-3 items-center flex-wrap justify-end">
+          {/* Role filter: managers can keep it, but backend will always show operators only */}
+          <select value={roleFilter} onChange={(e) => setRoleFilter((e.target.value || '') as any)} className="px-3 py-2 border border-gray-300 rounded-lg bg-white">
             <option value="">All roles</option>
             <option value="operator">Operator</option>
-            <option value="manager">Manager</option>
-            <option value="admin">Admin</option>
+            <option value="manager" disabled={isManager}>
+              Manager
+            </option>
+            <option value="admin" disabled={isManager}>
+              Admin
+            </option>
+          </select>
+
+          {/* Admin-only branch scope filter */}
+          <select
+            value={branchFilter}
+            onChange={(e) => setBranchFilter(e.target.value)}
+            disabled={!isAdmin || branchesLoading}
+            className="px-3 py-2 border border-gray-300 rounded-lg bg-white disabled:bg-gray-50"
+            title="Admin can scope users by branch"
+          >
+            {!isAdmin ? (
+              <option value="">My branch</option>
+            ) : (
+              <>
+                <option value="">All branches</option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {branchLabel(b)}
+                  </option>
+                ))}
+              </>
+            )}
           </select>
 
           <label className="flex items-center gap-2 text-sm text-gray-700">
-            <input
-              type="checkbox"
-              checked={includeInactive}
-              onChange={(e) => setIncludeInactive(e.target.checked)}
-              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
+            <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
             Include inactive
           </label>
 
-          <button
-            onClick={() => loadUsers()}
-            className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-            title="Refresh"
-          >
+          <button onClick={() => void loadUsers()} className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50" title="Refresh">
             <RefreshCw className="w-4 h-4" />
             Refresh
           </button>
@@ -251,12 +379,15 @@ export default function UsersPage() {
             </thead>
             <tbody>
               {filtered.map((u) => {
-                const isMe = u.id === user?.id;
+                const isMe = u.id === meId;
                 const roleIcon = u.role === 'admin' ? Shield : u.role === 'manager' ? UserCog : Users;
                 const RoleIcon = roleIcon as any;
 
-                // UI safety: managers can’t create admin; and should not edit admin
-                const managerBlockedTarget = isManager && u.role === 'admin';
+                // extra safety: even if backend changes, keep UI restrictions
+                const managerBlockedTarget = isManager && (u.role === 'admin' || u.role === 'manager' || isMe);
+
+                // admin editing own role blocked in modal, but keep UI friendly too
+                const editBlocked = managerBlockedTarget;
 
                 return (
                   <tr key={u.id} className="border-b last:border-b-0 border-gray-100">
@@ -273,18 +404,10 @@ export default function UsersPage() {
                     </td>
 
                     <td className="px-5 py-4">
-                      <span
-                        className={`inline-flex items-center px-2.5 py-1 rounded-full ${
-                          u.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'
-                        }`}
-                      >
+                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full ${u.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'}`}>
                         {u.is_active ? 'Active' : 'Inactive'}
                       </span>
-                      {isMe && (
-                        <span className="ml-2 text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-full px-2 py-0.5">
-                          You
-                        </span>
-                      )}
+                      {isMe && <span className="ml-2 text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-full px-2 py-0.5">You</span>}
                     </td>
 
                     <td className="px-5 py-4">
@@ -294,13 +417,11 @@ export default function UsersPage() {
                             setEditing(u);
                             setShowModal(true);
                           }}
-                          disabled={managerBlockedTarget}
+                          disabled={editBlocked}
                           className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border ${
-                            managerBlockedTarget
-                              ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
-                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            editBlocked ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                           }`}
-                          title={managerBlockedTarget ? 'Managers cannot edit admin users' : 'Edit user'}
+                          title={editBlocked ? 'Not allowed' : 'Edit user'}
                         >
                           <Pencil className="w-4 h-4" />
                           Edit
@@ -325,9 +446,7 @@ export default function UsersPage() {
                             onClick={() => reactivateUser(u)}
                             disabled={managerBlockedTarget}
                             className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg ${
-                              managerBlockedTarget
-                                ? 'bg-gray-50 text-gray-400 border border-gray-200 cursor-not-allowed'
-                                : 'bg-green-50 text-green-700 border border-green-200 hover:bg-green-100'
+                              managerBlockedTarget ? 'bg-gray-50 text-gray-400 border border-gray-200 cursor-not-allowed' : 'bg-green-50 text-green-700 border border-green-200 hover:bg-green-100'
                             }`}
                             title="Reactivate user"
                           >
@@ -355,8 +474,13 @@ export default function UsersPage() {
 
       {showModal && (
         <UserModal
-          meRole={user?.role as Role}
+          meId={meId}
+          meRole={meRole}
+          meBranchId={meBranchId}
           editing={editing}
+          branches={branches}
+          branchesLoading={branchesLoading}
+          branchesError={branchesError}
           onClose={() => {
             setShowModal(false);
             setEditing(null);
@@ -371,15 +495,25 @@ export default function UsersPage() {
 }
 
 function UserModal({
+  meId,
   meRole,
+  meBranchId,
   editing,
+  branches,
+  branchesLoading,
+  branchesError,
   onClose,
   onSaved,
   setPageError,
   setAccessDenied,
 }: {
+  meId: string;
   meRole: Role;
+  meBranchId: string;
   editing: SafeUser | null;
+  branches: Branch[];
+  branchesLoading: boolean;
+  branchesError: string;
   onClose: () => void;
   onSaved: () => Promise<void> | void;
   setPageError: (v: string) => void;
@@ -387,32 +521,61 @@ function UserModal({
 }) {
   const isManager = meRole === 'manager';
   const isEditingAdmin = !!editing && editing.role === 'admin';
+  const isEditingSelf = !!editing && editing.id === meId;
 
   const [form, setForm] = useState({
     email: editing?.email || '',
     full_name: editing?.full_name || '',
-    role: (editing?.role || 'operator') as Role,
+    role: (editing?.role || (isManager ? 'operator' : 'operator')) as Role,
     is_active: editing?.is_active ?? true,
     password: '',
+    branch_id: String((editing as any)?.branch_id || (isManager ? meBranchId : '')),
   });
+
+  // PATCH 2: manager create => operator only + forced branch
+  useEffect(() => {
+    if (isManager && !editing) {
+      setForm((p) => ({ ...p, role: 'operator', branch_id: meBranchId }));
+    }
+  }, [isManager, editing, meBranchId]);
 
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState('');
 
+  function mustHaveBranch(role: Role) {
+    return role === 'operator' || role === 'manager';
+  }
+
   function validateCreate() {
     const email = String(form.email || '').trim().toLowerCase();
     const pw = String(form.password || '');
+
     if (!email) return 'Email is required.';
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Email format is invalid.';
     if (!pw || pw.length < 8) return 'Password must be at least 8 characters.';
-    if (isManager && form.role === 'admin') return 'Managers cannot create admin users.';
+
+    if (isManager) {
+      if (!meBranchId) return 'Manager account is not assigned to any branch.';
+      // Managers can only create operator users
+      if (form.role !== 'operator') return 'Managers can only create operator users.';
+    }
+
+    if (mustHaveBranch(form.role) && !String(form.branch_id || '').trim()) {
+      return 'Branch is required for operator/manager accounts.';
+    }
+
     return '';
   }
 
   function validateEdit() {
-    if (isManager && isEditingAdmin) return 'Managers cannot modify admin users.';
-    if (form.role === 'admin' && isManager) return 'Managers cannot promote users to admin.';
+    if (isManager && (isEditingAdmin || isEditingSelf)) return 'Managers cannot modify this user.';
+
     if (form.password && form.password.length < 8) return 'Password must be at least 8 characters.';
+
+    if (mustHaveBranch(form.role) && !String(form.branch_id || '').trim()) {
+      return 'Branch is required for operator/manager accounts.';
+    }
+
     return '';
   }
 
@@ -430,21 +593,63 @@ function UserModal({
 
     setSaving(true);
 
-    if (!editing) {
-      const payload = {
-        email: String(form.email || '').trim().toLowerCase(),
-        password: String(form.password || ''),
-        full_name: String(form.full_name || '').trim(),
-        role: form.role,
-        is_active: !!form.is_active,
-      };
+    try {
+      if (!editing) {
+        const payload: any = {
+          email: String(form.email || '').trim().toLowerCase(),
+          password: String(form.password || ''),
+          full_name: String(form.full_name || '').trim(),
+          role: isManager ? 'operator' : form.role,
+          is_active: !!form.is_active,
+          branch_id: isManager ? (meBranchId || null) : (String(form.branch_id || '').trim() || null),
+        };
 
-      const resp = await apiClient.post('/api/users', payload);
+        const resp = await apiClient.post('/api/users', payload);
+        const e2 = pickErrorMessage(resp);
 
-      if ((resp as any)?.error) {
-        const msg = String((resp as any).error || 'Failed to create user');
-        setModalError(msg);
-        if (isForbiddenError(msg)) setAccessDenied(true);
+        if (e2) {
+          setModalError(e2);
+          if (isForbiddenError(e2)) setAccessDenied(true);
+          setSaving(false);
+          return;
+        }
+
+        await onSaved();
+        onClose();
+        setSaving(false);
+        return;
+      }
+
+      // Edit mode
+      const patch: any = {};
+
+      if (String(form.full_name ?? '') !== String(editing.full_name ?? '')) patch.full_name = String(form.full_name || '').trim();
+
+      // Admin: can change role/branch (except self role change is blocked in backend)
+      // Manager: cannot change role/branch at all (backend enforces)
+      if (!isManager) {
+        if (form.role !== editing.role) patch.role = form.role;
+
+        const oldBranch = String((editing as any)?.branch_id || '');
+        const newBranch = String(form.branch_id || '');
+        if (newBranch !== oldBranch) patch.branch_id = newBranch.trim() || null;
+      }
+
+      if (!!form.is_active !== !!editing.is_active) patch.is_active = !!form.is_active;
+      if (form.password) patch.password = String(form.password);
+
+      if (Object.keys(patch).length === 0) {
+        setModalError('No changes to save.');
+        setSaving(false);
+        return;
+      }
+
+      const resp = await apiClient.put(`/api/users/${editing.id}`, patch);
+      const e3 = pickErrorMessage(resp);
+
+      if (e3) {
+        setModalError(e3);
+        if (isForbiddenError(e3)) setAccessDenied(true);
         setSaving(false);
         return;
       }
@@ -452,36 +657,19 @@ function UserModal({
       await onSaved();
       onClose();
       setSaving(false);
-      return;
-    }
-
-    // editing: send only changes
-    const patch: any = {};
-    if (String(form.full_name ?? '') !== String(editing.full_name ?? '')) patch.full_name = String(form.full_name || '').trim();
-    if (form.role !== editing.role) patch.role = form.role;
-    if (!!form.is_active !== !!editing.is_active) patch.is_active = !!form.is_active;
-    if (form.password) patch.password = String(form.password);
-
-    if (Object.keys(patch).length === 0) {
-      setModalError('No changes to save.');
-      setSaving(false);
-      return;
-    }
-
-    const resp = await apiClient.put(`/api/users/${editing.id}`, patch);
-
-    if ((resp as any)?.error) {
-      const msg = String((resp as any).error || 'Failed to update user');
+    } catch (e: any) {
+      const msg = String(e?.message || 'Failed to save user');
       setModalError(msg);
       if (isForbiddenError(msg)) setAccessDenied(true);
       setSaving(false);
-      return;
     }
-
-    await onSaved();
-    onClose();
-    setSaving(false);
   }
+
+  const branchDisabled = branchesLoading || saving || isManager; // PATCH 2: manager branch locked
+  const roleDisabled =
+    saving ||
+    (isManager && (isEditingAdmin || form.role === 'admin' || !editing)) ||
+    (!isManager && isEditingSelf); // admin cannot change own role (backend forbids; UI blocks)
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
@@ -493,6 +681,18 @@ function UserModal({
             <div className="mt-3 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg text-sm flex items-start gap-2">
               <AlertTriangle className="w-5 h-5 mt-0.5" />
               <div>{modalError}</div>
+            </div>
+          )}
+
+          {branchesError && (
+            <div className="mt-3 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-lg text-sm">
+              {branchesError}
+            </div>
+          )}
+
+          {isManager && !meBranchId && (
+            <div className="mt-3 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-lg text-sm">
+              Your manager account has no branch assignment. Ask an admin to assign your branch.
             </div>
           )}
         </div>
@@ -522,41 +722,45 @@ function UserModal({
             />
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Branch {mustHaveBranch(form.role) ? '*' : ''}</label>
+            <select value={form.branch_id} onChange={(e) => setForm({ ...form, branch_id: e.target.value })} disabled={branchDisabled} className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white disabled:bg-gray-50">
+              <option value="">{branchesLoading ? 'Loading branches...' : isManager ? 'Locked to my branch' : 'Unassigned'}</option>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {branchLabel(b)}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">Operators and managers must be assigned to a branch.</p>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-              <select
-                value={form.role}
-                disabled={isManager && (isEditingAdmin || form.role === 'admin')}
-                onChange={(e) => setForm({ ...form, role: e.target.value as Role })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white disabled:bg-gray-50"
-              >
+              <select value={form.role} disabled={roleDisabled} onChange={(e) => setForm({ ...form, role: e.target.value as Role })} className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white disabled:bg-gray-50">
                 <option value="operator">Operator</option>
-                <option value="manager">Manager</option>
+                <option value="manager" disabled={isManager}>
+                  Manager
+                </option>
                 <option value="admin" disabled={isManager}>
                   Admin
                 </option>
               </select>
-              {isManager && <p className="text-xs text-gray-500 mt-1">Managers cannot create/promote admin.</p>}
+              {isManager && <p className="text-xs text-gray-500 mt-1">Managers can only create operator users.</p>}
+              {!isManager && isEditingSelf && <p className="text-xs text-gray-500 mt-1">You cannot change your own role.</p>}
             </div>
 
             <div className="flex items-end">
               <label className="flex items-center gap-2 text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={!!form.is_active}
-                  onChange={(e) => setForm({ ...form, is_active: e.target.checked })}
-                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
+                <input type="checkbox" checked={!!form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                 Active
               </label>
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              {editing ? 'Reset password (optional)' : 'Password *'}
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">{editing ? 'Reset password (optional)' : 'Password *'}</label>
             <input
               type="password"
               value={form.password}
@@ -568,18 +772,10 @@ function UserModal({
           </div>
 
           <div className="flex gap-3 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-            >
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
               {saving ? 'Saving...' : editing ? 'Save Changes' : 'Create User'}
             </button>
           </div>

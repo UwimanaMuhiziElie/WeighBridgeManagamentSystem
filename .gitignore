@@ -21,3 +21,13 @@ dist-ssr
 *.sln
 *.sw?
 .env
+.env.example
+
+# Build / release artifacts
+apps/desktop/dist-electron/
+apps/desktop/release/
+coverage/
+*.tsbuildinfo
+apps/backend/.env.example
+apps/desktop/.env.example
+apps/web/.env.example

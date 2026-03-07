@@ -1,5 +1,6 @@
-/*
-  # Db Schema for Weighbridge Management System
+/*001_initial_schema.sql
+
+  # Initial Database Schema for Weighbridge Management System
 
   1. Core Tables
     - users: User authentication and profiles

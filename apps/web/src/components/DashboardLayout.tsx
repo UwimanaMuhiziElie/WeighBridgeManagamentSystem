@@ -1,6 +1,9 @@
+// apps/web/src/components/DashboardLayout.tsx
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useBranch } from '../contexts/BranchContext';
+
 import type { LucideIcon } from 'lucide-react';
 import {
   Scale,
@@ -29,20 +32,22 @@ type MenuItem = {
 export default function DashboardLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, profile, signOut } = useAuth();
+  const { branchId, setBranchId, branches, loadingBranches } = useBranch();
+
   const navigate = useNavigate();
   const location = useLocation();
 
   const role = (user?.role || (profile as any)?.role || 'operator') as Role;
-
-  const displayName =
-    (profile as any)?.full_name ||
-    user?.full_name ||
-    user?.email ||
-    'User';
+  const displayName = (profile as any)?.full_name || user?.full_name || user?.email || 'User';
 
   const menuItems = useMemo<MenuItem[]>(
     () => [
       { id: 'dashboard', path: '/', label: 'Dashboard', icon: LayoutDashboard, roles: ['operator', 'admin', 'manager'] },
+
+      // ✅ Admin/Manager monitoring pages (web portal)
+      { id: 'transactions', path: '/transactions', label: 'Transactions', icon: Scale, roles: ['admin', 'manager'] },
+      { id: 'invoices', path: '/invoices', label: 'Invoices', icon: FileText, roles: ['admin', 'manager'] },
+
       { id: 'clients', path: '/clients', label: 'Client Analytics', icon: BarChart3, roles: ['operator', 'admin', 'manager'] },
 
       // Admin/Manager only
@@ -55,10 +60,13 @@ export default function DashboardLayout() {
     []
   );
 
-  const visibleMenuItems = useMemo(
-    () => menuItems.filter((m) => m.roles.includes(role)),
-    [menuItems, role]
-  );
+  const visibleMenuItems = useMemo(() => menuItems.filter((m) => m.roles.includes(role)), [menuItems, role]);
+
+  const activeBranchName = useMemo(() => {
+    if (!branchId) return role === 'admin' ? 'All branches' : '—';
+    const found = branches.find((b: any) => String(b.id) === String(branchId));
+    return (found as any)?.name || (found as any)?.branch_name || `Branch ${String(branchId).slice(0, 6)}…`;
+  }, [branchId, branches, role]);
 
   useEffect(() => {
     setSidebarOpen(false);
@@ -86,12 +94,13 @@ export default function DashboardLayout() {
 
   const handleSignOut = useCallback(async () => {
     try {
+      setBranchId('');
       await signOut();
     } finally {
       setSidebarOpen(false);
       navigate('/login', { replace: true });
     }
-  }, [signOut, navigate]);
+  }, [signOut, navigate, setBranchId]);
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -109,7 +118,7 @@ export default function DashboardLayout() {
             <div>
               <div className="font-bold text-lg">Weighbridge</div>
               <div className="text-xs text-slate-400">
-                {role === 'operator' ? 'Operator Portal' : 'Admin Portal'}
+                {role === 'operator' ? 'Operator Portal' : role === 'manager' ? 'Manager Portal' : 'Admin Portal'}
               </div>
             </div>
           </div>
@@ -128,7 +137,6 @@ export default function DashboardLayout() {
           <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto" aria-label="Main navigation">
             {visibleMenuItems.map((item) => {
               const Icon = item.icon;
-
               return (
                 <NavLink
                   key={item.id}
@@ -136,9 +144,7 @@ export default function DashboardLayout() {
                   end={item.path === '/'}
                   className={({ isActive }) =>
                     `w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
-                      isActive
-                        ? 'bg-blue-600 text-white'
-                        : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                      isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                     }`
                   }
                   onClick={() => setSidebarOpen(false)}
@@ -154,6 +160,9 @@ export default function DashboardLayout() {
             <div className="mb-4 px-4 py-3 bg-slate-800 rounded-lg">
               <div className="text-sm font-medium text-white">{displayName}</div>
               <div className="text-xs text-slate-400 capitalize">{role}</div>
+              <div className="text-xs text-slate-400 mt-1">
+                Branch: <span className="text-slate-200">{activeBranchName}</span>
+              </div>
             </div>
 
             <button
@@ -180,6 +189,32 @@ export default function DashboardLayout() {
           </button>
 
           <div className="flex items-center gap-4">
+            {role === 'admin' ? (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-600">Branch:</span>
+                <select
+                  value={branchId ?? ''}
+                  onChange={(e) => setBranchId(e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm"
+                  disabled={loadingBranches}
+                >
+                  <option value="">All branches</option>
+                  {branches.map((b: any) => {
+                    const name = b?.name || b?.branch_name || `Branch ${b?.id}`;
+                    return (
+                      <option key={b.id} value={String(b.id)}>
+                        {name}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+            ) : (
+              <div className="text-sm text-gray-600">
+                Branch: <span className="font-medium text-gray-900">{activeBranchName}</span>
+              </div>
+            )}
+
             <div className="text-sm text-gray-600">
               {new Date().toLocaleDateString(undefined, {
                 weekday: 'long',

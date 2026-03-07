@@ -3,18 +3,51 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "main": "./index.ts",
-  "types": "./index.ts",
+  "sideEffects": false,
+  "files": ["dist"],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./index.ts",
-    "./components": "./components/index.ts",
-    "./hooks": "./hooks/index.ts",
-    "./utils": "./utils/index.ts",
-    "./types": "./types/index.ts",
-    "./lib/apiClient": "./lib/apiClient.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./components": {
+      "types": "./dist/components/index.d.ts",
+      "import": "./dist/components/index.js",
+      "default": "./dist/components/index.js"
+    },
+    "./hooks": {
+      "types": "./dist/hooks/index.d.ts",
+      "import": "./dist/hooks/index.js",
+      "default": "./dist/hooks/index.js"
+    },
+    "./utils": {
+      "types": "./dist/utils/index.d.ts",
+      "import": "./dist/utils/index.js",
+      "default": "./dist/utils/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/types/index.js",
+      "default": "./dist/types/index.js"
+    },
+    "./lib/apiClient": {
+      "types": "./dist/lib/apiClient.d.ts",
+      "import": "./dist/lib/apiClient.js",
+      "default": "./dist/lib/apiClient.js"
+    }
   },
-  "dependencies": {
-    "react": "^18.3.1",
+  "scripts": {
+    "build": "tsc -p ./tsconfig.json",
+    "typecheck": "tsc -p ./tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
     "lucide-react": "^0.344.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
   }
 }

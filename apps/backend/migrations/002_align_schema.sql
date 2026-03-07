@@ -19,7 +19,7 @@ ALTER TABLE branches
   ADD COLUMN IF NOT EXISTS phone text DEFAULT '',
   ADD COLUMN IF NOT EXISTS email text DEFAULT '';
 
--- 2 steps:
+-- If you want code required + unique (recommended), do it in 2 steps:
 -- (a) ensure existing rows have code values, then:
 -- ALTER TABLE branches ALTER COLUMN code SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_branches_code ON branches(code) WHERE code IS NOT NULL;
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS client_pricing (
 
 CREATE INDEX IF NOT EXISTS idx_client_pricing_client_id ON client_pricing(client_id);
 
--- 4) updated_at auto-update triggers
+-- 4) updated_at auto-update triggers (recommended)
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS trigger AS $$
 BEGIN

@@ -29,22 +29,23 @@ export function formatDateRange(dateFrom: string, dateTo: string): string {
   return `${from} - ${to}`;
 }
 
-export function exportToCSV(data: any[], filename: string): void {
-  if (data.length === 0) return;
+function csvEscape(value: unknown): string {
+  if (value === null || value === undefined) return '';
 
-  const headers = Object.keys(data[0]);
+  let s = typeof value === 'string' ? value : JSON.stringify(value);
+  if (/^[=\-+@]/.test(s)) s = `'${s}`;
+  s = s.replace(/"/g, '""');
+  if (/[,"\n\r]/.test(s)) return `"${s}"`;
+  return s;
+}
+
+export function exportToCSV(data: any[], filename: string): void {
+  if (!Array.isArray(data) || data.length === 0) return;
+
+  const headers = Object.keys(data[0] || {});
   const csvContent = [
-    headers.join(','),
-    ...data.map((row) =>
-      headers.map((header) => {
-        const value = row[header];
-        if (value === null || value === undefined) return '';
-        if (typeof value === 'string' && value.includes(',')) {
-          return `"${value}"`;
-        }
-        return value;
-      }).join(',')
-    ),
+    headers.map(csvEscape).join(','),
+    ...data.map((row) => headers.map((h) => csvEscape(row?.[h])).join(',')),
   ].join('\n');
 
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -75,9 +76,7 @@ export function printReport(elementId: string): void {
     .report-header { margin-bottom: 20px; }
     .report-title { font-size: 24px; font-weight: bold; margin-bottom: 10px; }
     .report-summary { background-color: #f9fafb; padding: 15px; margin: 20px 0; }
-    @media print {
-      button { display: none; }
-    }
+    @media print { button { display: none; } }
   `);
   printWindow.document.write('</style></head><body>');
   printWindow.document.write(printContent.innerHTML);

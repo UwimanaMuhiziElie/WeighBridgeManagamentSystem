@@ -17,7 +17,8 @@
     "noFallthroughCasesInSwitch": true,
     "paths": {
       "@/*": ["./src/*"],
-      "@shared/*": ["../../packages/shared/*"]
+      "@shared/*": ["../../packages/shared/*"],
+      "@weighbridge/shared/*": ["../../packages/shared/*"]
     }
   },
   "include": ["src", "electron"],

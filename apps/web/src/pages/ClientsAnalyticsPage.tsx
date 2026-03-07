@@ -1,18 +1,74 @@
+// apps/web/src/pages/ClientsAnalyticsPage.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { TrendingUp, AlertTriangle, RefreshCw } from 'lucide-react';
 import { apiClient } from '@weighbridge/shared/lib/apiClient';
 import { useAuth } from '../contexts/AuthContext';
 import { Branch } from '@weighbridge/shared';
 
+/* -------------------- PATCH-1 RESPONSE HELPERS -------------------- */
+
+function pickErrorMessage(resp: any): string | null {
+  if (!resp) return 'Request failed';
+  if (resp?.error) return String(resp.error);
+  if (resp?.success === false) return String(resp.error || resp.message || 'Request failed');
+  if (resp?.data?.success === false) return String(resp.data.error || resp.data.message || 'Request failed');
+  return null;
+}
+
+function unwrapArray<T>(resp: any): T[] {
+  const root = resp?.data ?? resp;
+
+  const arr =
+    Array.isArray(root) ? root :
+    Array.isArray(root?.data) ? root.data :
+    Array.isArray(root?.rows) ? root.rows :
+    Array.isArray(root?.data?.rows) ? root.data.rows :
+    [];
+
+  return Array.isArray(arr) ? (arr as T[]) : [];
+}
+
+function unwrapObject<T = any>(resp: any): T {
+  const root = resp?.data ?? resp;
+  const obj =
+    (root && typeof root === 'object' && 'data' in root && root.data && typeof root.data === 'object')
+      ? root.data
+      : root;
+  return obj as T;
+}
+
 function isForbiddenError(msg: string) {
   const m = (msg || '').toLowerCase();
   return m.includes('forbidden') || m.includes('403') || m.includes('request failed (403)');
 }
 
-function toISODate(d: Date) {
+// ✅ timezone-safe YYYY-MM-DD for <input type="date">
+function toDateInputValue(d: Date) {
   const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x.toISOString().slice(0, 10);
+  const y = x.getFullYear();
+  const m = String(x.getMonth() + 1).padStart(2, '0');
+  const day = String(x.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function pickBranchName(b: any) {
+  return String(b?.name || b?.branch_name || '').trim();
+}
+function pickBranchCode(b: any) {
+  return String(b?.code || b?.branch_code || '').trim();
+}
+function branchLabel(b: any) {
+  const n = pickBranchName(b);
+  const c = pickBranchCode(b);
+  if (c && n) return `${c} — ${n}`;
+  return n || c || String(b?.id || '');
+}
+
+function fmtMoney(v: any) {
+  if (v === null || v === undefined) return '—';
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n)) return '—';
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 type ClientsAnalytics = {
@@ -24,20 +80,31 @@ type ClientsAnalytics = {
 
 export default function ClientsAnalyticsPage() {
   const { user } = useAuth();
-  const isAdminOrManager = user?.role === 'admin' || user?.role === 'manager';
+  const role = user?.role || '';
+
+  // Backend allows operator/admin/manager. UI: allow view for all 3.
+  const canView = role === 'operator' || role === 'admin' || role === 'manager';
+
+  const isAdmin = role === 'admin';
+  const isManager = role === 'manager';
+  const isAdminOrManager = isAdmin || isManager;
+
+  const myBranchId = String((user as any)?.branch_id || '');
 
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [selectedBranch, setSelectedBranch] = useState<string>('');
+  const [selectedBranch, setSelectedBranch] = useState<string>(''); // admin-only branch filter
 
   const [from, setFrom] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
-    return toISODate(d);
+    return toDateInputValue(d);
   });
-  const [to, setTo] = useState(() => toISODate(new Date()));
+  const [to, setTo] = useState(() => toDateInputValue(new Date()));
 
   const [data, setData] = useState<ClientsAnalytics | null>(null);
-  const [loading, setLoading] = useState(true);
+
+  const [loading, setLoading] = useState(true); // initial page load
+  const [fetching, setFetching] = useState(false); // later Apply/Refresh
   const [pageError, setPageError] = useState('');
   const [accessDenied, setAccessDenied] = useState(false);
 
@@ -57,54 +124,114 @@ export default function ClientsAnalyticsPage() {
     setPageError('');
     setAccessDenied(false);
 
+    // Load branches only if allowed (admin/manager)
     if (isAdminOrManager) {
-      const bResp = await apiClient.get<Branch[]>('/api/branches');
-      if (!mountedRef.current) return;
-      if ((bResp as any)?.error) {
-        const msg = String((bResp as any).error || 'Failed to load branches');
-        setBranches([]);
-        setPageError(msg);
-        if (isForbiddenError(msg)) setAccessDenied(true);
-      } else {
-        setBranches(Array.isArray(bResp.data) ? bResp.data : []);
-      }
+      await loadBranches();
     }
 
     await loadAnalytics();
-    setLoading(false);
+    if (mountedRef.current) setLoading(false);
+  }
+
+  async function loadBranches() {
+    try {
+      const resp = await apiClient.get('/api/branches');
+      if (!mountedRef.current) return;
+
+      const err = pickErrorMessage(resp);
+      if (err) {
+        setBranches([]);
+        setPageError(err);
+        if (isForbiddenError(err)) setAccessDenied(true);
+        return;
+      }
+
+      setBranches(unwrapArray<Branch>(resp));
+    } catch (e: any) {
+      if (!mountedRef.current) return;
+      const msg = String(e?.message || 'Failed to load branches');
+      setBranches([]);
+      setPageError(msg);
+      if (isForbiddenError(msg)) setAccessDenied(true);
+    }
   }
 
   async function loadAnalytics() {
     setPageError('');
     setAccessDenied(false);
 
-    const qs = new URLSearchParams();
-    qs.set('from', from);
-    qs.set('to', to);
-
-    // only allow branch switch for admin/manager
-    if (isAdminOrManager && selectedBranch) qs.set('branch_id', selectedBranch);
-
-    const resp = await apiClient.get<ClientsAnalytics>(`/api/analytics/clients?${qs.toString()}`);
-
-    if (!mountedRef.current) return;
-
-    if ((resp as any)?.error) {
-      const msg = String((resp as any).error || 'Failed to load client analytics');
-      setData(null);
-      setPageError(msg);
-      if (isForbiddenError(msg)) setAccessDenied(true);
+    // basic client-side validation (backend also validates)
+    if (from && to && from > to) {
+      setPageError('"From" date cannot be after "To" date.');
       return;
     }
 
-    setData(resp.data as any);
+    setFetching(true);
+
+    try {
+      const qs = new URLSearchParams();
+      qs.set('from', from);
+      qs.set('to', to);
+
+      // ✅ backend rule: only admin can switch branch context
+      if (isAdmin && selectedBranch) qs.set('branch_id', selectedBranch);
+
+      const resp = await apiClient.get(`/api/analytics/clients?${qs.toString()}`);
+      if (!mountedRef.current) return;
+
+      const err = pickErrorMessage(resp);
+      if (err) {
+        setData(null);
+        setPageError(err);
+        if (isForbiddenError(err)) setAccessDenied(true);
+        return;
+      }
+
+      setData(unwrapObject<ClientsAnalytics>(resp));
+    } catch (e: any) {
+      if (!mountedRef.current) return;
+      const msg = String(e?.message || 'Failed to load client analytics');
+      setData(null);
+      setPageError(msg);
+      if (isForbiddenError(msg)) setAccessDenied(true);
+    } finally {
+      if (mountedRef.current) setFetching(false);
+    }
   }
 
-  const branchLabel = useMemo(() => {
-    if (!isAdminOrManager) return 'My branch';
-    if (!selectedBranch) return 'All branches';
-    return branches.find(b => b.id === selectedBranch)?.name || selectedBranch;
-  }, [isAdminOrManager, selectedBranch, branches]);
+  const branchScopeLabel = useMemo(() => {
+    if (!canView) return '—';
+
+    // Admin: can choose branch or all
+    if (isAdmin) {
+      if (!selectedBranch) return 'All branches';
+      const b = branches.find((x: any) => String((x as any)?.id) === selectedBranch);
+      return branchLabel(b) || selectedBranch;
+    }
+
+    // Manager/operator: forced to own branch
+    if (isAdminOrManager && myBranchId) {
+      const b = branches.find((x: any) => String((x as any)?.id) === myBranchId);
+      return branchLabel(b) || 'My branch';
+    }
+    return 'My branch';
+  }, [canView, isAdmin, isAdminOrManager, selectedBranch, branches, myBranchId]);
+
+  if (!canView) {
+    return (
+      <div className="p-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-6 h-6 text-amber-600 mt-0.5" />
+            <div>
+              <h1 className="text-xl font-bold text-gray-900">Access Restricted</h1>
+              <p className="text-gray-600 mt-1">You don’t have permission to view client analytics.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -140,11 +267,12 @@ export default function ClientsAnalyticsPage() {
 
         <button
           onClick={() => void loadAnalytics()}
-          className="inline-flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+          disabled={fetching}
+          className="inline-flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           title="Refresh"
         >
           <RefreshCw className="w-4 h-4" />
-          Refresh
+          {fetching ? 'Refreshing...' : 'Refresh'}
         </button>
       </div>
 
@@ -158,6 +286,7 @@ export default function ClientsAnalyticsPage() {
             className="w-full px-3 py-2 border border-gray-300 rounded-lg"
           />
         </div>
+
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">To</label>
           <input
@@ -170,34 +299,38 @@ export default function ClientsAnalyticsPage() {
 
         <div className="md:col-span-2">
           <label className="block text-sm font-medium text-gray-700 mb-1">Branch</label>
+
+          {/* ✅ Only admin can change branch context. Manager/operator are forced to own branch. */}
           <select
-            value={selectedBranch}
+            value={isAdmin ? selectedBranch : ''}
             onChange={(e) => setSelectedBranch(e.target.value)}
-            disabled={!isAdminOrManager}
+            disabled={!isAdmin}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white disabled:bg-gray-50"
           >
-            {!isAdminOrManager ? (
+            {!isAdmin ? (
               <option value="">My branch</option>
             ) : (
               <>
                 <option value="">All branches</option>
-                {branches.map((b) => (
+                {branches.map((b: any) => (
                   <option key={b.id} value={b.id}>
-                    {b.name}
+                    {branchLabel(b) || b.id}
                   </option>
                 ))}
               </>
             )}
           </select>
-          <div className="text-xs text-gray-500 mt-1">Current: {branchLabel}</div>
+
+          <div className="text-xs text-gray-500 mt-1">Current: {branchScopeLabel}</div>
         </div>
 
         <div className="md:col-span-4 flex justify-end">
           <button
             onClick={() => void loadAnalytics()}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            disabled={fetching}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
           >
-            Apply
+            {fetching ? 'Applying...' : 'Apply'}
           </button>
         </div>
       </div>
@@ -219,7 +352,7 @@ export default function ClientsAnalyticsPage() {
                 rows={data.top_clients.map((x) => [
                   x.client_name || x.client_id,
                   String(x.invoices),
-                  x.total_value == null ? '—' : String(x.total_value),
+                  x.total_value == null ? '—' : fmtMoney(x.total_value),
                 ])}
                 empty="No client data"
               />
@@ -231,7 +364,7 @@ export default function ClientsAnalyticsPage() {
                 rows={data.invoice_aging.map((x) => [
                   x.bucket,
                   String(x.count),
-                  x.value == null ? '—' : String(x.value),
+                  x.value == null ? '—' : fmtMoney(x.value),
                 ])}
                 empty="No aging data"
               />
@@ -264,18 +397,9 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function SimpleTable({
-  headers,
-  rows,
-  empty,
-}: {
-  headers: string[];
-  rows: string[][];
-  empty: string;
-}) {
-  if (!rows.length) {
-    return <div className="text-gray-600 text-sm">{empty}</div>;
-  }
+function SimpleTable({ headers, rows, empty }: { headers: string[]; rows: string[][]; empty: string }) {
+  if (!rows.length) return <div className="text-gray-600 text-sm">{empty}</div>;
+
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full text-sm">

@@ -1,0 +1,109 @@
+services:
+  db:
+    image: postgres:16
+    container_name: weighbridge_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 25
+
+  migrate:
+    image: postgres:16
+    container_name: weighbridge_migrate
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./apps/backend/migrations:/migrations:ro
+      - ./apps/backend/migrate.sh:/migrate.sh:ro
+    entrypoint: ["sh", "/migrate.sh"]
+    restart: "no"
+
+  deps:
+    image: node:20-bookworm-slim
+    container_name: weighbridge_deps
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - node_modules:/app/node_modules
+    command:
+      [
+        "sh",
+        "-lc",
+        "npm ci --workspaces --include-workspace-root && npm run build -w packages/shared"
+      ]
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    container_name: weighbridge_backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      deps:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: ${NODE_ENV}
+      PORT: "${BACKEND_PORT}"
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      CORS_CREDENTIALS: "${CORS_CREDENTIALS}"
+      JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "${BACKEND_PORT}:3001"
+    volumes:
+      - ./:/app
+      - node_modules:/app/node_modules
+    command: ["npm", "run", "dev", "-w", "apps/backend"]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: weighbridge_web
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      backend:
+        condition: service_started
+    environment:
+      VITE_API_URL: ${VITE_API_URL}
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "${WEB_PORT}:5174"
+    volumes:
+      - ./:/app
+      - node_modules:/app/node_modules
+    command:
+      [
+        "npm",
+        "run",
+        "dev",
+        "-w",
+        "apps/web",
+        "--",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "5174",
+        "--strictPort"
+      ]
+
+volumes:
+  pgdata:
+  node_modules:

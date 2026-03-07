@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+dist
+**/dist
+dist-ssr
+**/dist-ssr
+apps/**/release
+apps/**/build
+.git
+.vscode
+.DS_Store
+*.log

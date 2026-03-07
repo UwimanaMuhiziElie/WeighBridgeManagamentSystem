@@ -1,10 +1,9 @@
+// apps/backend/src/routes/api/attendance.ts
 import { Router, Response } from 'express';
 import { pool, query } from '../../db.js';
 import { authenticate, requireRole, AuthRequest } from '../../middleware/auth.js';
 
 const router = Router();
-
-// JWT-protected
 router.use(authenticate);
 
 function badRequest(res: Response, message: string) {
@@ -49,9 +48,6 @@ function parseIsoDateTime(v: unknown): Date | null {
   return d;
 }
 
-/**
- * Branch resolution (temporary until schema confirmed).
- */
 async function resolveUserBranchId(userId: string): Promise<string | null> {
   // 1) users.branch_id
   try {
@@ -60,16 +56,16 @@ async function resolveUserBranchId(userId: string): Promise<string | null> {
     if (typeof bid === 'string' && isUuid(bid)) return bid;
   } catch {}
 
-  // 2) user_profiles.branch_id (user_profiles.user_id)
+  // 2) user_profiles.id == users.id  (most consistent with your other modules)
   try {
-    const r2 = await query(`SELECT branch_id FROM user_profiles WHERE user_id = $1 LIMIT 1`, [userId]);
+    const r2 = await query(`SELECT branch_id FROM user_profiles WHERE id = $1 LIMIT 1`, [userId]);
     const bid = r2.rows?.[0]?.branch_id;
     if (typeof bid === 'string' && isUuid(bid)) return bid;
   } catch {}
 
-  // 3) user_profiles.branch_id (user_profiles.id == users.id)
+  // 3) legacy fallback if schema has user_id
   try {
-    const r3 = await query(`SELECT branch_id FROM user_profiles WHERE id = $1 LIMIT 1`, [userId]);
+    const r3 = await query(`SELECT branch_id FROM user_profiles WHERE user_id = $1 LIMIT 1`, [userId]);
     const bid = r3.rows?.[0]?.branch_id;
     if (typeof bid === 'string' && isUuid(bid)) return bid;
   } catch {}
@@ -79,9 +75,8 @@ async function resolveUserBranchId(userId: string): Promise<string | null> {
 
 /**
  * Branch scoping:
- * - operator: forced to own branch
- * - admin/manager: may use ?branch_id=... or default to own
- * - if admin/manager has no assignment => must pass branch_id
+ * - admin: can use ?branch_id=...; else uses own assignment; if none => must pass branch_id
+ * - manager/operator: forced to own branch; ?branch_id allowed only if matches own
  */
 async function getScopedBranchId(req: AuthRequest, res: Response): Promise<string | null> {
   const userId = req.user?.id;
@@ -92,44 +87,46 @@ async function getScopedBranchId(req: AuthRequest, res: Response): Promise<strin
     return null;
   }
 
-  const requestedBranch =
-    typeof req.query.branch_id === 'string' ? req.query.branch_id.trim() : '';
+  const requestedBranch = typeof req.query.branch_id === 'string' ? req.query.branch_id.trim() : '';
+  const own = await resolveUserBranchId(userId);
+
+  if (role === 'admin') {
+    if (requestedBranch) {
+      if (!isUuid(requestedBranch)) return badRequest(res, 'Invalid branch_id'), null;
+      return requestedBranch;
+    }
+    if (own) return own;
+    return badRequest(res, 'branch_id is required for admin without a branch assignment'), null;
+  }
+
+  // manager/operator
+  if (!own) return forbidden(res, 'User is not assigned to any branch'), null;
 
   if (requestedBranch) {
     if (!isUuid(requestedBranch)) return badRequest(res, 'Invalid branch_id'), null;
-    if (role === 'admin' || role === 'manager') return requestedBranch;
-    return forbidden(res, 'Operators cannot switch branch context'), null;
+    if (requestedBranch !== own) return forbidden(res, 'You cannot switch branch context'), null;
   }
 
-  const branchId = await resolveUserBranchId(userId);
-  if (branchId) return branchId;
-
-  if (role === 'admin' || role === 'manager') {
-    return badRequest(res, 'branch_id is required for admin/manager without a branch assignment'), null;
-  }
-
-  return forbidden(res, 'User is not assigned to any branch'), null;
+  return own;
 }
 
-async function ensureOperatorExists(operatorId: string) {
+async function getOperatorInfo(operatorId: string): Promise<{ id: string; full_name: string; role: string; branch_id: string | null } | null> {
   const r = await query(
-    `SELECT id, full_name, role
+    `SELECT id, full_name, role, branch_id
      FROM users
      WHERE id = $1
      LIMIT 1`,
     [operatorId]
   );
   if (r.rows.length === 0) return null;
-  return r.rows[0] as { id: string; full_name: string; role: string };
+
+  const row = r.rows[0];
+  const branch_id = typeof row.branch_id === 'string' && isUuid(row.branch_id) ? row.branch_id : null;
+  return { id: row.id, full_name: row.full_name, role: row.role, branch_id };
 }
 
 /**
  * POST /api/attendance
- * - operator: can only write their own attendance
- * - admin/manager: can write for any operator_id (must be UUID)
- *
- * Requires DB table + constraint:
- *   attendance_records(branch_id, operator_id, date) UNIQUE
  */
 router.post(
   '/',
@@ -161,24 +158,21 @@ router.post(
       return badRequest(res, 'shift_end must be after shift_start');
     }
 
-    // operator_id rules:
-    // - operator role: forced to JWT user id
-    // - admin/manager: may supply operator_id; required to be UUID
     const bodyOperatorId = normalizeText(req.body?.operator_id, 80);
     const operator_id = role === 'operator' ? req.user!.id : (bodyOperatorId || '');
     if (!operator_id) return badRequest(res, 'operator_id is required');
     if (!isUuid(operator_id)) return badRequest(res, 'operator_id must be a UUID');
 
     try {
-      const operator = await ensureOperatorExists(operator_id);
+      const operator = await getOperatorInfo(operator_id);
       if (!operator) return notFound(res, 'Operator not found');
+      if (operator.role !== 'operator') return badRequest(res, 'attendance can only be recorded for users with role=operator');
 
-      // Optional: enforce only users with role=operator can be recorded
-      if (operator.role !== 'operator') {
-        return badRequest(res, 'attendance can only be recorded for users with role=operator');
-      }
+      // Enforce operator belongs to same branchId
+      const opBranch = operator.branch_id ?? (await resolveUserBranchId(operator_id));
+      if (!opBranch) return badRequest(res, 'Operator has no branch assignment');
+      if (opBranch !== branchId) return forbidden(res, 'Operator does not belong to this branch');
 
-      // Count transactions for that operator on that date in this branch
       const txCountRes = await query(
         `SELECT COUNT(*)::int as count
          FROM transactions
@@ -191,7 +185,6 @@ router.post(
 
       const transactions_processed = Number(txCountRes.rows?.[0]?.count || 0);
 
-      // Use a single connection to avoid weirdness under load
       const dbClient = await pool.connect();
       try {
         await dbClient.query('BEGIN');
@@ -209,16 +202,7 @@ router.post(
              notes = EXCLUDED.notes,
              recorded_at = NOW()
            RETURNING id, branch_id, operator_id, date, hours_worked, shift_start, shift_end, transactions_processed, notes, recorded_at`,
-          [
-            branchId,
-            operator_id,
-            date,
-            hours_worked,
-            shift_start,
-            shift_end,
-            transactions_processed,
-            notes,
-          ]
+          [branchId, operator_id, date, hours_worked, shift_start, shift_end, transactions_processed, notes]
         );
 
         await dbClient.query('COMMIT');
@@ -243,9 +227,7 @@ router.post(
 );
 
 /**
- * GET /api/attendance?operator_id=<uuid>&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&limit=200
- * - operator: can only read their own records
- * - admin/manager: can read branch-scoped records, optionally filtered
+ * GET /api/attendance?operator_id=&date_from=&date_to=&limit=
  */
 router.get(
   '/',
@@ -267,7 +249,6 @@ router.get(
     if (date_from && !isISODate(date_from)) return badRequest(res, 'date_from must be YYYY-MM-DD');
     if (date_to && !isISODate(date_to)) return badRequest(res, 'date_to must be YYYY-MM-DD');
 
-    // operator role: forced to their own operator_id filter
     const effectiveOperatorId = role === 'operator' ? req.user!.id : operator_id_q;
 
     try {

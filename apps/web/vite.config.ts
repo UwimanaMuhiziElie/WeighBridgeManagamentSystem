@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 
 export default defineConfig({
+  base: './', 
   plugins: [react()],
   resolve: {
     alias: {
@@ -10,7 +11,14 @@ export default defineConfig({
       '@shared': path.resolve(__dirname, '../../packages/shared'),
     },
   },
-  optimizeDeps: {
-    exclude: ['lucide-react'],
+  server: {
+    host: true,       
+    port: 5174,       
+    strictPort: true,  
   },
+  preview: {
+    host: true,
+    port: 5174,
+    strictPort: true,
+  }
 });

@@ -1,21 +1,22 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
   useRef,
   useState,
   ReactNode,
-  useCallback,
 } from 'react';
 import { apiClient } from '@weighbridge/shared/lib/apiClient';
 import type { UserProfile } from '@weighbridge/shared';
 
 type User = {
-  id: string;
+  id: string | number;
   email: string;
   full_name?: string | null;
-  role: string;
+  role: string; // backend role string
+  branch_id?: string | number | null;
 };
 
 type AuthContextType = {
@@ -35,26 +36,87 @@ function normalizeEmail(email: string) {
 }
 
 function isValidUser(u: any): u is User {
-  return !!u && typeof u === 'object' && typeof u.id === 'string' && typeof u.email === 'string' && typeof u.role === 'string';
+  const idOk = typeof u?.id === 'string' || typeof u?.id === 'number';
+  return (
+    !!u &&
+    typeof u === 'object' &&
+    idOk &&
+    typeof u.email === 'string' &&
+    typeof u.role === 'string'
+  );
 }
 
 /**
  * Supports backend shapes:
  * - { success, data: { user, token? } }
  * - { user, token? }
+ * - { <user> } (me endpoint returns user directly)
  * - apiClient wrappers that might return { data: <body> }
  */
 function extractUserAndToken(payload: any): { user: User | null; token: string | null } {
-  const root = payload?.data ?? payload;     // apiClient wrapper
-  const body = root?.data ?? root;           // backend { data: ... }
+  const root = payload?.data ?? payload; // api wrapper
+  const body = root?.data ?? root; // backend { data: ... }
 
-  const user = body?.user ?? body?.data?.user ?? null;
-  const token = body?.token ?? body?.data?.token ?? null;
+  const userCandidate = body?.user ?? body?.data?.user ?? body;
+  const tokenCandidate =
+    body?.token ??
+    body?.access_token ??
+    body?.accessToken ??
+    body?.data?.token ??
+    body?.data?.access_token ??
+    body?.data?.accessToken ??
+    null;
 
   return {
-    user: isValidUser(user) ? user : null,
-    token: typeof token === 'string' && token.length > 10 ? token : null,
+    user: isValidUser(userCandidate) ? userCandidate : null,
+    token: typeof tokenCandidate === 'string' && tokenCandidate.length > 10 ? tokenCandidate : null,
   };
+}
+
+function pickErrorMessage(resp: any): string | null {
+  if (!resp) return 'Request failed';
+  if (resp.error) return String(resp.error);
+  if (resp.success === false) return String(resp.error || resp.message || 'Request failed');
+  if (resp?.data?.success === false)
+    return String(resp?.data?.error || resp?.data?.message || 'Request failed');
+  return null;
+}
+
+function is404(msg: string) {
+  const s = (msg || '').toLowerCase();
+  return s.includes('404') || s.includes('not found') || s.includes('cannot get');
+}
+
+async function safeGetMe(): Promise<User | null> {
+  // 1) Prefer method if exists
+  if (typeof (apiClient as any).getCurrentUser === 'function') {
+    const r = await (apiClient as any).getCurrentUser();
+    const err = pickErrorMessage(r);
+    if (!err) {
+      const { user } = extractUserAndToken(r);
+      if (user) return user;
+    } else if (!is404(err)) {
+      throw new Error(err);
+    }
+  }
+
+  // 2) Fallback endpoints
+  const candidates = ['/api/auth/me', '/auth/me'];
+  for (const path of candidates) {
+    const r = await apiClient.get(path);
+    const err = pickErrorMessage(r);
+
+    if (!err) {
+      const { user } = extractUserAndToken(r);
+      if (user) return user;
+      continue;
+    }
+
+    if (is404(err)) continue;
+    throw new Error(err);
+  }
+
+  return null;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -78,15 +140,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // /auth/me => { success, data: { user } }
-      const resp = await apiClient.getCurrentUser();
-      const { user: meUser } = extractUserAndToken(resp);
-
+      const meUser = await safeGetMe();
       if (!mountedRef.current) return;
 
       if (meUser) {
         setUser(meUser);
-        // Until you have a real profile endpoint, keep this for UI compatibility.
         setProfile(meUser as unknown as UserProfile);
       } else {
         clearSession();
@@ -101,7 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     mountedRef.current = true;
-    bootstrap();
+    void bootstrap();
     return () => {
       mountedRef.current = false;
     };
@@ -115,9 +173,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const resp = await apiClient.getCurrentUser();
-      const { user: meUser } = extractUserAndToken(resp);
-
+      const meUser = await safeGetMe();
       if (meUser) {
         setUser(meUser);
         setProfile(meUser as unknown as UserProfile);
@@ -133,34 +189,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const emailNorm = normalizeEmail(email);
     const pw = String(password || '');
 
-    if (!emailNorm || !pw) {
-      throw new Error('Email and password are required');
-    }
+    if (!emailNorm || !pw) throw new Error('Email and password are required');
+    if (typeof apiClient.login !== 'function') throw new Error('apiClient.login is not available');
 
     const resp = await apiClient.login(emailNorm, pw);
 
-    if ((resp as any)?.error) {
-      // prevent “half logged-in” state if an old token exists
+    const err = pickErrorMessage(resp);
+    if (err) {
       apiClient.setToken?.(null);
-      throw new Error((resp as any).error);
+      throw new Error(err);
     }
 
     const { user: loggedInUser, token } = extractUserAndToken(resp);
 
-    // apiClient.login already sets token if present, but we enforce correctness here
-    if (!loggedInUser || !token) {
+    // Some clients set token internally; accept that too
+    const finalToken = token ?? apiClient.getToken?.() ?? null;
+
+    if (!loggedInUser || !finalToken) {
       apiClient.setToken?.(null);
       throw new Error('Login failed');
     }
 
-    apiClient.setToken?.(token);
+    // Ensure token is set (idempotent)
+    apiClient.setToken?.(finalToken);
+
     setUser(loggedInUser);
     setProfile(loggedInUser as unknown as UserProfile);
   }, []);
 
   const signOut = useCallback(async () => {
     try {
-      await apiClient.logout();
+      await apiClient.logout?.();
     } catch {
       // ignore
     } finally {

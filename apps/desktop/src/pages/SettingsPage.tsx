@@ -1,60 +1,282 @@
-import { useState, useEffect } from 'react';
-import { useSerialPort, SerialPortInfo } from '@weighbridge/shared';
+import { useEffect, useMemo, useState } from 'react';
 import { Settings as SettingsIcon, RefreshCw, AlertCircle, CheckCircle, Play } from 'lucide-react';
+import { useSerialPort, type SerialConfig } from '@weighbridge/shared';
+
+const STORAGE_KEY = 'serialConfig';
+
+function isProdBuild(): boolean {
+  try {
+    const env = (import.meta as any)?.env;
+    if (typeof env?.PROD === 'boolean') return env.PROD;
+    const mode = String(env?.MODE || '').toLowerCase();
+    return mode === 'production';
+  } catch {
+    return false;
+  }
+}
+
+function safeLocalStorage(): Storage | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
+  } catch {}
+  return null;
+}
+
+function safeParseSerialConfig(raw: string | null): SerialConfig | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+
+    return {
+      path: typeof v?.path === 'string' ? v.path : '',
+      baudRate: Number.isFinite(Number(v?.baudRate)) ? Number(v.baudRate) : 9600,
+      dataBits: v?.dataBits === 7 ? 7 : 8,
+      stopBits: v?.stopBits === 2 ? 2 : 1,
+      parity: v?.parity === 'even' ? 'even' : v?.parity === 'odd' ? 'odd' : 'none',
+
+      // ✅ keep poll fields if present
+      mode: v?.mode === 'stream' ? 'stream' : 'poll',
+      requestCommand: typeof v?.requestCommand === 'string' ? v.requestCommand : 'P\r\n',
+      pollIntervalMs: Number.isFinite(Number(v?.pollIntervalMs)) ? Math.max(200, Number(v.pollIntervalMs)) : 1000,
+      responseWaitMs: Number.isFinite(Number(v?.responseWaitMs)) ? Math.max(50, Number(v.responseWaitMs)) : 300,
+      encoding: typeof v?.encoding === 'string' ? v.encoding : 'ascii',
+      xon: !!v?.xon,
+      xoff: !!v?.xoff,
+      rtscts: !!v?.rtscts,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function fmtWeight(n: number | null | undefined) {
+  if (n == null) return '—';
+  const x = Number(n);
+  if (!Number.isFinite(x)) return '—';
+  return `${x.toFixed(2)} kg`;
+}
+
+function clipRaw(raw: string, max = 700) {
+  const s = String(raw ?? '');
+  if (s.length <= max) return s;
+  return s.slice(0, max) + '…';
+}
+
+// ✅ Windows COM10+ normalization (use for opening, NOT for dropdown storage)
+function normalizeComPath(pathStr: string): string {
+  const p = String(pathStr || '').trim();
+  const m = p.match(/^COM(\d+)$/i);
+  if (!m) return p;
+  const n = Number(m[1]);
+  if (Number.isFinite(n) && n >= 10) return `\\\\.\\COM${n}`;
+  return p;
+}
+
+// ✅ Show a safe “escaped” view in input (so real CR/LF don’t break the input box)
+function toEscapedView(s: string): string {
+  return String(s ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+}
+
+// ✅ Convert user-typed escapes to real control chars before sending to serial
+function fromEscapedView(s: string): string {
+  return String(s ?? '')
+    .replace(/\\\\/g, '\\') // unescape backslashes first
+    .replace(/\\r/g, '\r')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t');
+}
 
 export default function SettingsPage() {
-  const {
-    ports,
-    isConnected,
-    error,
-    isLoading,
-    listPorts,
-    connect,
-    disconnect,
-    simulateWeight,
-  } = useSerialPort();
+  const storage = safeLocalStorage();
+  const simAllowed = useMemo(() => !isProdBuild(), []);
 
-  const [config, setConfig] = useState({
-    path: '',
-    baudRate: 9600,
-    dataBits: 8 as 7 | 8,
-    stopBits: 1 as 1 | 2,
-    parity: 'none' as 'none' | 'even' | 'odd',
+  const serial = useSerialPort();
+
+  const ports = serial?.ports ?? [];
+  const isConnected = !!serial?.isConnected;
+  const serialError = serial?.error ?? '';
+  const isLoading = !!serial?.isLoading;
+  const hasElectron = !!serial?.hasElectron;
+
+  const listPorts = serial?.listPorts;
+  const connect = serial?.connect;
+  const disconnect = serial?.disconnect;
+  const simulateWeight = serial?.simulateWeight;
+
+  // ✅ new (from updated hook)
+  const testRead = serial?.testRead; // (opts) => { success, raw, weight }
+  const lastRaw = serial?.lastRaw as string | null | undefined;
+  const currentWeight = serial?.currentWeight as number | null | undefined;
+
+  const [uiError, setUiError] = useState('');
+  const error = uiError || serialError || '';
+
+  const [config, setConfig] = useState<SerialConfig>(() => {
+    const saved = safeParseSerialConfig(storage?.getItem(STORAGE_KEY) ?? null);
+    return (
+      saved ?? {
+        path: '',
+        baudRate: 9600,
+        dataBits: 8,
+        stopBits: 1,
+        parity: 'none',
+
+        mode: 'poll',
+        requestCommand: 'P\r\n',
+        pollIntervalMs: 1000,
+        responseWaitMs: 300,
+        encoding: 'ascii',
+        xon: false,
+        xoff: false,
+        rtscts: false,
+      }
+    );
   });
+
+  // ✅ request command input uses escaped text
+  const [requestCmdText, setRequestCmdText] = useState(() => toEscapedView(config.requestCommand ?? 'P\r\n'));
+  useEffect(() => {
+    // keep in sync when config loads/changes externally
+    setRequestCmdText(toEscapedView(config.requestCommand ?? 'P\r\n'));
+  }, [config.requestCommand]);
 
   const [simulatorWeight, setSimulatorWeight] = useState('1000');
 
-  useEffect(() => {
-    listPorts();
-    const savedConfig = localStorage.getItem('serialConfig');
-    if (savedConfig) {
-      setConfig(JSON.parse(savedConfig));
-    }
-  }, []);
+  // ✅ Test Read state
+  const [testLoading, setTestLoading] = useState(false);
+  const [testAt, setTestAt] = useState<string>('');
+  const [testRaw, setTestRaw] = useState<string>('');
+  const [testWeight, setTestWeight] = useState<number | null>(null);
+
+  async function refreshPorts() {
+    setUiError('');
+    await listPorts?.();
+  }
 
   async function handleConnect() {
-    const success = await connect(config);
-    if (success) {
-      localStorage.setItem('serialConfig', JSON.stringify(config));
+    if (!hasElectron) return setUiError('Serial features are available only inside the Electron desktop app.');
+    if (!config.path) return setUiError('Select a serial port first.');
+    if (!Number.isFinite(config.baudRate) || config.baudRate <= 0) {
+      return setUiError('Baud rate must be a valid positive number.');
+    }
+
+    setUiError('');
+
+    const requestCommandReal = fromEscapedView(requestCmdText || 'P\\r\\n');
+
+    // ✅ connect using normalized path (COM10+), but store raw path for dropdown matching
+    const cfgForConnect: SerialConfig = {
+      ...config,
+      path: normalizeComPath(config.path),
+
+      mode: 'poll',
+      requestCommand: requestCommandReal,
+      pollIntervalMs: config.pollIntervalMs ?? 1000,
+      responseWaitMs: config.responseWaitMs ?? 300,
+      encoding: config.encoding ?? 'ascii',
+
+      xon: false,
+      xoff: false,
+      rtscts: false,
+    };
+
+    const ok = await connect?.(cfgForConnect);
+    if (ok) {
+      const cfgForStorage: SerialConfig = {
+        ...cfgForConnect,
+        path: config.path, // ✅ store raw selection
+      };
+      storage?.setItem(STORAGE_KEY, JSON.stringify(cfgForStorage));
     }
   }
 
   async function handleDisconnect() {
-    await disconnect();
+    setUiError('');
+    await disconnect?.();
+    setTestAt('');
+    setTestRaw('');
+    setTestWeight(null);
   }
 
   async function handleSimulate() {
+    if (!hasElectron) return setUiError('Serial features are available only inside the Electron desktop app.');
+    if (!simAllowed) return setUiError('Weight simulator is disabled in production builds.');
+    if (isConnected) return setUiError('Disconnect the serial port to use simulation.');
+
     const weight = parseFloat(simulatorWeight);
-    if (!isNaN(weight)) {
-      await simulateWeight(weight);
+    if (!Number.isFinite(weight)) return setUiError('Simulation weight must be a valid number.');
+
+    setUiError('');
+    await simulateWeight?.(weight);
+  }
+
+  async function handleTestRead() {
+    if (!hasElectron) return setUiError('Serial features are available only inside the Electron desktop app.');
+    if (!isConnected) return setUiError('Connect to the serial port first.');
+    if (typeof testRead !== 'function') {
+      return setUiError('Test Read is not available. Please ensure Electron preload/main were updated (serial:test-read).');
+    }
+
+    setUiError('');
+    setTestLoading(true);
+
+    try {
+      const r = await testRead({
+        requestCommand: fromEscapedView(requestCmdText || 'P\\r\\n'),
+        responseWaitMs: config.responseWaitMs ?? 300,
+        encoding: config.encoding ?? 'ascii',
+      });
+
+      if (!r?.success) {
+        setUiError(r?.error || 'Test Read failed.');
+        setTestAt(new Date().toLocaleTimeString());
+        setTestRaw('');
+        setTestWeight(null);
+        return;
+      }
+
+      setTestAt(new Date().toLocaleTimeString());
+      setTestRaw(String(r.raw ?? ''));
+      setTestWeight(typeof r.weight === 'number' && Number.isFinite(r.weight) ? r.weight : null);
+    } catch (e: any) {
+      setUiError(e?.message || 'Test Read failed.');
+    } finally {
+      setTestLoading(false);
     }
   }
+
+  useEffect(() => {
+    void refreshPorts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ✅ default selection (still compares against raw port.path)
+  useEffect(() => {
+    if (isConnected) return;
+    if (!ports?.length) return;
+    if (config.path && ports.some((p: any) => p.path === config.path)) return;
+    setConfig((c) => ({ ...c, path: ports[0].path }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ports, isConnected]);
+
+  const simulatorEnabled = !!hasElectron && simAllowed && !isConnected;
 
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Settings</h1>
 
+      {!hasElectron && (
+        <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-lg text-sm">
+          This screen requires the Electron desktop runtime (preload bridge not found).
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Serial config */}
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center gap-2 mb-6">
             <SettingsIcon className="w-5 h-5 text-gray-600" />
@@ -76,28 +298,29 @@ export default function SettingsPage() {
           )}
 
           <div className="space-y-4">
+            {/* Port */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-sm font-medium text-gray-700">
-                  Serial Port
-                </label>
+                <label className="block text-sm font-medium text-gray-700">Serial Port</label>
                 <button
-                  onClick={listPorts}
-                  disabled={isLoading}
-                  className="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                  type="button"
+                  onClick={() => void refreshPorts()}
+                  disabled={isLoading || !hasElectron}
+                  className="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1 disabled:opacity-50"
                 >
                   <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
                   Refresh
                 </button>
               </div>
+
               <select
                 value={config.path}
-                onChange={(e) => setConfig({ ...config, path: e.target.value })}
-                disabled={isConnected}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+                onChange={(e) => setConfig((c) => ({ ...c, path: e.target.value }))}
+                disabled={isConnected || !hasElectron}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100"
               >
                 <option value="">Select a port</option>
-                {ports.map((port) => (
+                {(ports || []).map((port: any) => (
                   <option key={port.path} value={port.path}>
                     {port.path}
                     {port.manufacturer && ` - ${port.manufacturer}`}
@@ -106,37 +329,32 @@ export default function SettingsPage() {
               </select>
             </div>
 
+            {/* Baud */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Baud Rate
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Baud Rate</label>
               <select
                 value={config.baudRate}
-                onChange={(e) => setConfig({ ...config, baudRate: parseInt(e.target.value) })}
-                disabled={isConnected}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+                onChange={(e) => setConfig((c) => ({ ...c, baudRate: parseInt(e.target.value, 10) }))}
+                disabled={isConnected || !hasElectron}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100"
               >
-                <option value={1200}>1200</option>
-                <option value={2400}>2400</option>
-                <option value={4800}>4800</option>
-                <option value={9600}>9600</option>
-                <option value={19200}>19200</option>
-                <option value={38400}>38400</option>
-                <option value={57600}>57600</option>
-                <option value={115200}>115200</option>
+                {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
               </select>
             </div>
 
+            {/* Bits/parity */}
             <div className="grid grid-cols-3 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Data Bits
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Data Bits</label>
                 <select
                   value={config.dataBits}
-                  onChange={(e) => setConfig({ ...config, dataBits: parseInt(e.target.value) as 7 | 8 })}
-                  disabled={isConnected}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+                  onChange={(e) => setConfig((c) => ({ ...c, dataBits: parseInt(e.target.value, 10) as 7 | 8 }))}
+                  disabled={isConnected || !hasElectron}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100"
                 >
                   <option value={7}>7</option>
                   <option value={8}>8</option>
@@ -144,14 +362,12 @@ export default function SettingsPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Stop Bits
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Stop Bits</label>
                 <select
                   value={config.stopBits}
-                  onChange={(e) => setConfig({ ...config, stopBits: parseInt(e.target.value) as 1 | 2 })}
-                  disabled={isConnected}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+                  onChange={(e) => setConfig((c) => ({ ...c, stopBits: parseInt(e.target.value, 10) as 1 | 2 }))}
+                  disabled={isConnected || !hasElectron}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100"
                 >
                   <option value={1}>1</option>
                   <option value={2}>2</option>
@@ -159,14 +375,12 @@ export default function SettingsPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Parity
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Parity</label>
                 <select
                   value={config.parity}
-                  onChange={(e) => setConfig({ ...config, parity: e.target.value as 'none' | 'even' | 'odd' })}
-                  disabled={isConnected}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+                  onChange={(e) => setConfig((c) => ({ ...c, parity: e.target.value as SerialConfig['parity'] }))}
+                  disabled={isConnected || !hasElectron}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg disabled:bg-gray-100"
                 >
                   <option value="none">None</option>
                   <option value="even">Even</option>
@@ -175,80 +389,169 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            <div className="pt-4">
+            {/* Advanced (poll) */}
+            <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+              <div className="text-sm font-medium text-gray-800 mb-2">Scale Poll Settings (PHP-compatible)</div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Request command</label>
+                  <input
+                    value={requestCmdText}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setRequestCmdText(next);
+                      setConfig((c) => ({ ...c, requestCommand: fromEscapedView(next) }));
+                    }}
+                    disabled={isConnected || !hasElectron}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white disabled:bg-gray-100 font-mono text-sm"
+                    placeholder="P\\r\\n"
+                  />
+                  <div className="text-[11px] text-gray-500 mt-1">
+                    Use escaped form (recommended): <span className="font-mono">P\\r\\n</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Response wait (ms)</label>
+                  <input
+                    type="number"
+                    value={config.responseWaitMs ?? 300}
+                    onChange={(e) =>
+                      setConfig((c) => ({ ...c, responseWaitMs: Math.max(50, Number(e.target.value || 0)) }))
+                    }
+                    disabled={isConnected || !hasElectron}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white disabled:bg-gray-100 text-sm"
+                    min={50}
+                    step={50}
+                  />
+                  <div className="text-[11px] text-gray-500 mt-1">Default: 300ms (matches PHP).</div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Poll interval (ms)</label>
+                  <input
+                    type="number"
+                    value={config.pollIntervalMs ?? 1000}
+                    onChange={(e) =>
+                      setConfig((c) => ({ ...c, pollIntervalMs: Math.max(200, Number(e.target.value || 0)) }))
+                    }
+                    disabled={isConnected || !hasElectron}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white disabled:bg-gray-100 text-sm"
+                    min={200}
+                    step={100}
+                  />
+                  <div className="text-[11px] text-gray-500 mt-1">Default: 1000ms.</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Connect/Disconnect */}
+            <div className="pt-2">
               {isConnected ? (
                 <button
-                  onClick={handleDisconnect}
-                  disabled={isLoading}
+                  type="button"
+                  onClick={() => void handleDisconnect()}
+                  disabled={isLoading || !hasElectron}
                   className="w-full bg-red-600 text-white py-2 px-4 rounded-lg hover:bg-red-700 disabled:opacity-50"
                 >
                   Disconnect
                 </button>
               ) : (
                 <button
-                  onClick={handleConnect}
-                  disabled={isLoading || !config.path}
+                  type="button"
+                  onClick={() => void handleConnect()}
+                  disabled={isLoading || !config.path || !hasElectron}
                   className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50"
                 >
                   {isLoading ? 'Connecting...' : 'Connect'}
                 </button>
               )}
             </div>
-          </div>
-        </div>
 
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center gap-2 mb-6">
-            <Play className="w-5 h-5 text-gray-600" />
-            <h2 className="text-lg font-semibold text-gray-900">Weight Simulator</h2>
-          </div>
+            {/* Test Read */}
+            <div className="border border-gray-200 rounded-lg p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Test Read (Proof)</div>
+                  <div className="text-xs text-gray-500">
+                    Sends <span className="font-mono">{JSON.stringify(fromEscapedView(requestCmdText || 'P\\r\\n'))}</span>, waits{' '}
+                    <span className="font-mono">{String(config.responseWaitMs ?? 300)}</span>ms, shows raw + parsed.
+                  </div>
+                </div>
 
-          <p className="text-sm text-gray-600 mb-4">
-            Use this simulator for testing without a physical scale. Enter a weight value and click simulate to send it to the weighing interface.
-          </p>
+                <button
+                  type="button"
+                  onClick={() => void handleTestRead()}
+                  disabled={!hasElectron || !isConnected || testLoading}
+                  className="px-3 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-800 disabled:opacity-50"
+                >
+                  {testLoading ? 'Testing…' : 'Test Read'}
+                </button>
+              </div>
 
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Weight (kg)
-              </label>
-              <input
-                type="number"
-                value={simulatorWeight}
-                onChange={(e) => setSimulatorWeight(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="1000"
-                step="0.01"
-              />
-            </div>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                  <div className="text-xs text-gray-500">Parsed weight</div>
+                  <div className="mt-1 text-lg font-bold text-gray-900">{fmtWeight(testWeight)}</div>
+                  <div className="mt-1 text-[11px] text-gray-500">Last test: {testAt || '—'}</div>
 
-            <button
-              onClick={handleSimulate}
-              className="w-full bg-green-600 text-white py-2 px-4 rounded-lg hover:bg-green-700"
-            >
-              Simulate Weight
-            </button>
+                  <div className="mt-2 text-[11px] text-gray-500">
+                    Live (last event): <span className="font-mono">{fmtWeight(currentWeight)}</span>
+                  </div>
+                </div>
 
-            <div className="pt-4 border-t border-gray-200">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Quick Test Values</h3>
-              <div className="grid grid-cols-3 gap-2">
-                {[500, 1000, 2000, 5000, 10000, 15000].map((weight) => (
-                  <button
-                    key={weight}
-                    onClick={() => {
-                      setSimulatorWeight(weight.toString());
-                      simulateWeight(weight);
-                    }}
-                    className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm"
-                  >
-                    {weight} kg
-                  </button>
-                ))}
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                  <div className="text-xs text-gray-500">Raw response (truncated)</div>
+                  <pre className="mt-1 text-[12px] leading-snug whitespace-pre-wrap font-mono text-gray-800 max-h-28 overflow-auto">
+                    {clipRaw(testRaw || lastRaw || '') || '—'}
+                  </pre>
+                  <div className="text-[11px] text-gray-500 mt-1">
+                    Tip: If raw is empty, scale may require different command or another app is holding the COM port.
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </div>
+
+        {/* Simulator (DEV ONLY) */}
+        {simAllowed && (
+          <div className="bg-white rounded-lg shadow p-6">
+            <div className="flex items-center gap-2 mb-6">
+              <Play className="w-5 h-5 text-gray-600" />
+              <h2 className="text-lg font-semibold text-gray-900">Weight Simulator (DEV ONLY)</h2>
+            </div>
+
+            <p className="text-sm text-gray-600 mb-4">This simulator is disabled in production builds.</p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Weight (kg)</label>
+                <input
+                  type="number"
+                  value={simulatorWeight}
+                  onChange={(e) => setSimulatorWeight(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="1000"
+                  step="0.01"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void handleSimulate()}
+                disabled={!simulatorEnabled}
+                className="w-full bg-green-600 text-white py-2 px-4 rounded-lg hover:bg-green-700 disabled:opacity-50"
+              >
+                Simulate Weight
+              </button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {!simAllowed && <div className="mt-6 text-xs text-gray-500">Simulator hidden (production build).</div>}
     </div>
   );
 }

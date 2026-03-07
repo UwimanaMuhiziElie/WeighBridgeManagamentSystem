@@ -1,58 +1,92 @@
 import { PricingTier, ClientPricing } from '../types';
+import { formatCurrency } from './index';
+
+type Num = number | string | null | undefined;
+
+function toNumber(v: Num, fallback = 0): number {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : fallback;
+
+  if (typeof v === 'string') {
+    const cleaned = v.trim().replace(/,/g, '');
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  return fallback;
+}
+
+function round2(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100) / 100;
+}
 
 export function generateTransactionNumber(branchCode: string): string {
   const date = new Date();
   const year = date.getFullYear().toString().slice(-2);
-  const month = (date.getMonth() + 1).toString().padStart(2, '0');
-  const day = date.getDate().toString().padStart(2, '0');
-  const time = date.getTime().toString().slice(-6);
-
-  return `${branchCode}-${year}${month}${day}-${time}`;
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `${branchCode}-${year}${month}${day}-${rand}`;
 }
 
 export function calculateTransactionCost(
   netWeight: number,
   standardPricing: PricingTier | null,
-  clientPricing: ClientPricing | null
+  clientPricing: ClientPricing | null,
+  opts?: { currency?: string; locale?: string }
 ): { subtotal: number; breakdown: string } {
-  let pricePerWeighing = 0;
-  let pricePerKg = 0;
-  let minimumCharge = 0;
-  let discountPercentage = 0;
+  const safeWeight = Number.isFinite(netWeight) && netWeight > 0 ? netWeight : 0;
+  const tierPricePerWeighing = toNumber((standardPricing as any)?.price_per_weighing, 0);
+  const tierPricePerKg = toNumber((standardPricing as any)?.price_per_kg, 0);
+  const tierMinimum = toNumber((standardPricing as any)?.minimum_charge, 0);
 
-  if (clientPricing) {
-    pricePerWeighing = clientPricing.price_per_weighing ?? standardPricing?.price_per_weighing ?? 0;
-    pricePerKg = clientPricing.price_per_kg ?? standardPricing?.price_per_kg ?? 0;
-    minimumCharge = clientPricing.minimum_charge ?? standardPricing?.minimum_charge ?? 0;
-    discountPercentage = clientPricing.discount_percentage ?? 0;
-  } else if (standardPricing) {
-    pricePerWeighing = standardPricing.price_per_weighing;
-    pricePerKg = standardPricing.price_per_kg;
-    minimumCharge = standardPricing.minimum_charge;
+  const pricePerWeighingRaw =
+    (clientPricing as any)?.price_per_weighing ?? tierPricePerWeighing;
+
+  const pricePerKgRaw =
+    (clientPricing as any)?.price_per_kg ?? tierPricePerKg;
+
+  const minimumChargeRaw =
+    (clientPricing as any)?.minimum_charge ?? tierMinimum;
+
+  const discountPercentageRaw = (clientPricing as any)?.discount_percentage ?? 0;
+  const ppw = toNumber(pricePerWeighingRaw, 0);
+  const ppk = toNumber(pricePerKgRaw, 0);
+  const min = toNumber(minimumChargeRaw, 0);
+  const disc = toNumber(discountPercentageRaw, 0);
+  const weighingCharge = round2(ppw);
+  const weightCharge = round2(safeWeight * ppk);
+
+  let subtotal = round2(weighingCharge + weightCharge);
+
+  const minApplied = subtotal < min;
+  if (minApplied) subtotal = round2(min);
+
+  const discApplied = disc > 0;
+  if (discApplied) {
+    subtotal = round2(subtotal * (1 - disc / 100));
   }
 
-  const weighingCharge = pricePerWeighing;
-  const weightCharge = netWeight * pricePerKg;
-  let subtotal = weighingCharge + weightCharge;
+  const parts: string[] = [];
+  parts.push(`Weighing: ${formatCurrency(weighingCharge, opts)}`);
+  parts.push(
+    `Weight: ${safeWeight.toFixed(2)} kg × ${formatCurrency(ppk, opts)} = ${formatCurrency(weightCharge, opts)}`
+  );
 
-  if (subtotal < minimumCharge) {
-    subtotal = minimumCharge;
-  }
+  if (minApplied) parts.push(`Minimum charge applied: ${formatCurrency(min, opts)}`);
+  if (discApplied) parts.push(`Discount: ${round2(disc)}%`);
 
-  if (discountPercentage > 0) {
-    subtotal = subtotal * (1 - discountPercentage / 100);
-  }
-
-  const breakdown = `Weighing: $${weighingCharge.toFixed(2)} + Weight (${netWeight.toFixed(2)}kg × $${pricePerKg.toFixed(2)}): $${weightCharge.toFixed(2)}${discountPercentage > 0 ? ` - ${discountPercentage}% discount` : ''}`;
-
-  return { subtotal, breakdown };
+  return {
+    subtotal,
+    breakdown: parts.join(' | '),
+  };
 }
 
 export function generateInvoiceNumber(branchCode: string, sequence: number): string {
   const date = new Date();
   const year = date.getFullYear().toString().slice(-2);
-  const month = (date.getMonth() + 1).toString().padStart(2, '0');
-  const seq = sequence.toString().padStart(5, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const seq = String(Math.max(0, sequence | 0)).padStart(5, '0');
 
   return `INV-${branchCode}-${year}${month}-${seq}`;
 }
@@ -60,8 +94,8 @@ export function generateInvoiceNumber(branchCode: string, sequence: number): str
 export function generatePaymentNumber(branchCode: string, sequence: number): string {
   const date = new Date();
   const year = date.getFullYear().toString().slice(-2);
-  const month = (date.getMonth() + 1).toString().padStart(2, '0');
-  const seq = sequence.toString().padStart(5, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const seq = String(Math.max(0, sequence | 0)).padStart(5, '0');
 
   return `PAY-${branchCode}-${year}${month}-${seq}`;
 }

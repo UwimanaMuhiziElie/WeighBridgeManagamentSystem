@@ -1,0 +1,9 @@
+# Never send env secrets to Docker build context
+.env
+**/.env
+.env.*
+**/.env.*
+
+# But keep examples
+!.env.example
+!**/.env.example

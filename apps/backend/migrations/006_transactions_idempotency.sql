@@ -1,4 +1,4 @@
--- 004_transactions_idempotency.sql
+-- 006_transactions_idempotency.sql
 
 -- Add idempotency key for "first weight" creation
 ALTER TABLE transactions

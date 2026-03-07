@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Users, Search, RefreshCcw, AlertTriangle } from 'lucide-react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Users, Search, RefreshCcw, AlertTriangle, Plus } from 'lucide-react';
 import { apiClient } from '@weighbridge/shared/lib/apiClient';
+import { useAuth } from '../contexts/AuthContext';
+
+type Role = 'operator' | 'admin' | 'manager';
 
 type ClientRow = {
   id: string;
@@ -22,20 +25,37 @@ function num(v: unknown, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-async function safeGetArray<T>(endpoint: string): Promise<T[]> {
-  const resp = await apiClient.get<any>(endpoint);
-  if ((resp as any)?.error) throw new Error(String((resp as any).error));
+function pickErrorMessage(resp: any): string | null {
+  if (!resp) return 'Request failed';
+  if (resp.error) return String(resp.error);
+  if (resp.success === false) return String(resp.message || resp.error || 'Request failed');
+  return null;
+}
 
-  const data = (resp as any)?.data ?? resp;
+function unwrapArray<T>(resp: any): T[] {
+  const root = resp?.data ?? resp;
+
   const arr =
-    Array.isArray(data) ? data :
-    Array.isArray(data?.data) ? data.data :
-    Array.isArray(data?.rows) ? data.rows :
+    Array.isArray(root) ? root :
+    Array.isArray(root?.data) ? root.data :
+    Array.isArray(root?.rows) ? root.rows :
+    Array.isArray(root?.data?.rows) ? root.data.rows :
     [];
+
   return Array.isArray(arr) ? (arr as T[]) : [];
 }
 
+async function safeGetArray<T>(endpoint: string): Promise<T[]> {
+  const resp = await apiClient.get<any>(endpoint);
+  const err = pickErrorMessage(resp);
+  if (err) throw new Error(err);
+  return unwrapArray<T>(resp);
+}
+
 export default function ClientsPage() {
+  const { user } = useAuth();
+  const meRole = (user?.role || 'operator') as Role;
+
   const [rows, setRows] = useState<ClientRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -43,11 +63,12 @@ export default function ClientsPage() {
   const [q, setQ] = useState('');
   const [onlyActive, setOnlyActive] = useState(true);
 
+  const [showModal, setShowModal] = useState(false);
+
   async function load() {
     setError('');
     setLoading(true);
     try {
-      // backend already has GET /api/clients (your web dashboard uses it)
       const data = await safeGetArray<ClientRow>('/api/clients?limit=500');
       setRows(data);
     } catch (e: any) {
@@ -67,7 +88,6 @@ export default function ClientsPage() {
     let out = rows;
 
     if (onlyActive) out = out.filter((c) => c.is_active !== false);
-
     if (!term) return out;
 
     return out.filter((c) => {
@@ -93,19 +113,30 @@ export default function ClientsPage() {
           <Users className="w-8 h-8 text-blue-600" />
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Clients</h1>
-            <p className="text-sm text-gray-600">Quick lookup for weighing workflow (read-only)</p>
+            <p className="text-sm text-gray-600">Lookup + create clients for weighing workflow</p>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={loading}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-800 disabled:opacity-50"
-        >
-          <RefreshCcw className="w-4 h-4" />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowModal(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+          >
+            <Plus className="w-4 h-4" />
+            Add Client
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={loading}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-800 disabled:opacity-50"
+          >
+            <RefreshCcw className="w-4 h-4" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -178,15 +209,11 @@ export default function ClientsPage() {
                     <td className="px-5 py-4 text-gray-700">{c.contact_person || '—'}</td>
                     <td className="px-5 py-4 text-gray-700">{c.phone || '—'}</td>
                     <td className="px-5 py-4 text-gray-700">{c.email || '—'}</td>
-                    <td className="px-5 py-4 text-right text-gray-900">
-                      {num(c.current_balance, 0).toFixed(2)}
-                    </td>
+                    <td className="px-5 py-4 text-right text-gray-900">{num(c.current_balance, 0).toFixed(2)}</td>
                     <td className="px-5 py-4">
                       <span
                         className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${
-                          c.is_active === false
-                            ? 'bg-gray-100 text-gray-700'
-                            : 'bg-green-50 text-green-700'
+                          c.is_active === false ? 'bg-gray-100 text-gray-700' : 'bg-green-50 text-green-700'
                         }`}
                       >
                         {c.is_active === false ? 'Inactive' : 'Active'}
@@ -197,6 +224,239 @@ export default function ClientsPage() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {showModal && (
+        <AddClientModal
+          meRole={meRole}
+          onClose={() => setShowModal(false)}
+          onSaved={async () => {
+            await load();
+            setShowModal(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AddClientModal({
+  meRole,
+  onClose,
+  onSaved,
+}: {
+  meRole: Role;
+  onClose: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const isAdminOrManager = meRole === 'admin' || meRole === 'manager';
+
+  const [form, setForm] = useState({
+    company_name: '',
+    contact_person: '',
+    phone: '',
+    email: '',
+    address: '',
+    tax_id: '',
+    notes: '',
+    credit_limit: '',
+    payment_terms: 'Net 30',
+  });
+
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  function validate() {
+    if (!form.company_name.trim()) return 'Company name is required.';
+    if (!form.contact_person.trim()) return 'Contact person is required.';
+    if (!form.phone.trim()) return 'Phone is required.';
+
+    const email = form.email.trim().toLowerCase();
+    if (!email) return 'Email is required.';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Email format is invalid.';
+
+    if (isAdminOrManager && form.credit_limit.trim()) {
+      const n = parseFloat(form.credit_limit);
+      if (!Number.isFinite(n) || n < 0) return 'Credit limit must be a valid number >= 0.';
+    }
+
+    return '';
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setErr('');
+
+    const v = validate();
+    if (v) return setErr(v);
+
+    setSaving(true);
+
+    const payload: any = {
+      company_name: form.company_name.trim(),
+      contact_person: form.contact_person.trim(),
+      phone: form.phone.trim(),
+      email: form.email.trim().toLowerCase(),
+      address: form.address.trim(),
+      tax_id: form.tax_id.trim(),
+      notes: form.notes.trim(),
+    };
+
+    if (isAdminOrManager) {
+      payload.credit_limit = form.credit_limit.trim() ? parseFloat(form.credit_limit) : 0;
+      payload.payment_terms = form.payment_terms.trim() || 'Net 30';
+    }
+
+    const resp = await apiClient.post('/api/clients', payload);
+    const apiErr =
+      (resp?.success === false ? String(resp?.error || resp?.message || 'Failed to create client') : null);
+
+    if (apiErr) {
+      setErr(apiErr);
+      setSaving(false);
+      return;
+    }
+
+    await onSaved();
+    setSaving(false);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-xl shadow-xl max-w-lg w-full overflow-hidden">
+        <div className="p-6 border-b border-gray-200">
+          <h2 className="text-xl font-bold text-gray-900">Add Client</h2>
+
+          {err && (
+            <div className="mt-3 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg text-sm flex items-start gap-2">
+              <AlertTriangle className="w-5 h-5 mt-0.5" />
+              <div>{err}</div>
+            </div>
+          )}
+        </div>
+
+        <form onSubmit={submit} className="p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Company name *</label>
+            <input
+              value={form.company_name}
+              onChange={(e) => setForm({ ...form, company_name: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              maxLength={200}
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Contact person *</label>
+            <input
+              value={form.contact_person}
+              onChange={(e) => setForm({ ...form, contact_person: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              maxLength={200}
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Phone *</label>
+              <input
+                value={form.phone}
+                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                maxLength={50}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Email *</label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                maxLength={254}
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>
+            <input
+              value={form.address}
+              onChange={(e) => setForm({ ...form, address: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              maxLength={500}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Tax ID</label>
+              <input
+                value={form.tax_id}
+                onChange={(e) => setForm({ ...form, tax_id: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                maxLength={100}
+              />
+            </div>
+
+            {isAdminOrManager && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Credit limit</label>
+                <input
+                  value={form.credit_limit}
+                  onChange={(e) => setForm({ ...form, credit_limit: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  placeholder="0"
+                />
+              </div>
+            )}
+          </div>
+
+          {isAdminOrManager && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Payment terms</label>
+              <input
+                value={form.payment_terms}
+                onChange={(e) => setForm({ ...form, payment_terms: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                maxLength={50}
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+            <textarea
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              rows={3}
+              maxLength={2000}
+            />
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saving ? 'Saving...' : 'Create Client'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

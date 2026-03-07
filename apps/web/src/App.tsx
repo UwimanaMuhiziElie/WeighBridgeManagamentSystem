@@ -1,5 +1,8 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+// apps/web/src/App.tsx
+import type { ReactNode } from 'react';
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { BranchProvider } from './contexts/BranchContext';
 import LoginPage from './pages/LoginPage';
 import DashboardLayout from './components/DashboardLayout';
 import DashboardPage from './pages/DashboardPage';
@@ -9,6 +12,9 @@ import AdminPricingPage from './pages/AdminPricingPage';
 import ClientsAnalyticsPage from './pages/ClientsAnalyticsPage';
 import ReportsPage from './pages/ReportsPage';
 import APIManagementPage from './pages/APIManagementPage';
+import TransactionsPage from './pages/TransactionsPage';
+import InvoicesPage from './pages/InvoicesPage';
+import InvoiceDetailsPage from './pages/InvoiceDetailsPage';
 
 type Role = 'operator' | 'admin' | 'manager';
 
@@ -20,7 +26,7 @@ function FullscreenLoader() {
   );
 }
 
-function RequireAuth({ children }: { children: React.ReactNode }) {
+function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <FullscreenLoader />;
   if (!user) return <Navigate to="/login" replace />;
@@ -32,15 +38,13 @@ function AccessDenied() {
     <div className="p-6">
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <h1 className="text-xl font-bold text-gray-900">Access denied</h1>
-        <p className="text-gray-600 mt-2">
-          Your account doesn’t have permission to view this page.
-        </p>
+        <p className="text-gray-600 mt-2">Your account doesn’t have permission to view this page.</p>
       </div>
     </div>
   );
 }
 
-function RequireRole({ roles, children }: { roles: Role[]; children: React.ReactNode }) {
+function RequireRole({ roles, children }: { roles: Role[]; children: ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <FullscreenLoader />;
   if (!user) return <Navigate to="/login" replace />;
@@ -75,8 +79,14 @@ function AppRoutes() {
       >
         <Route index element={<DashboardPage />} />
 
+        {/*  Core operational pages (all roles) */}
+        <Route path="transactions" element={<TransactionsPage />} />
+        <Route path="invoices" element={<InvoicesPage />} />
+        <Route path="invoices/:id" element={<InvoiceDetailsPage />} />
+
         <Route path="clients" element={<ClientsAnalyticsPage />} />
 
+        {/* Admin/Manager only */}
         <Route
           path="branches"
           element={
@@ -127,9 +137,11 @@ function AppRoutes() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <BranchProvider>
+        <HashRouter>
+          <AppRoutes />
+        </HashRouter>
+      </BranchProvider>
     </AuthProvider>
   );
 }

@@ -1,4 +1,5 @@
-import { Router } from 'express';
+// apps/backend/src/routes/api/branches.ts
+import { Router, type Request, type Response } from 'express';
 import crypto from 'crypto';
 import { query } from '../../db.js';
 import { authenticate, requireRole } from '../../middleware/auth.js';
@@ -14,7 +15,6 @@ function isUuid(v: string) {
 }
 
 function isValidEmail(email: string) {
-  // Basic validation (enough for UI + DB). Real email validation is more complex.
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
@@ -23,49 +23,80 @@ function normalizeCode(code: string) {
 }
 
 function isValidCode(code: string) {
-  // Keep it strict to avoid messy codes in prod
   // Example: BR01, KGL-02, RW_01
   return /^[A-Z0-9][A-Z0-9_-]{1,19}$/.test(code);
 }
 
-function safeServerError(res: any) {
+function normalizeOptionalText(v: unknown, maxLen: number): string | null {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
+}
+
+function safeServerError(res: Response) {
   return res.status(500).json({ success: false, error: 'Internal server error' });
 }
 
-function handlePgError(res: any, e: any, fallbackMsg: string) {
-  // Do NOT leak raw DB errors to clients in production
+function handlePgError(res: Response, e: any, fallbackMsg: string) {
   if (e?.code === '23505') {
     return res.status(409).json({ success: false, error: 'Branch code already exists' });
   }
-  // invalid text representation (e.g., bad uuid)
   if (e?.code === '22P02') {
     return res.status(400).json({ success: false, error: 'Invalid input' });
   }
-  // foreign key violation (not likely here, but good hygiene)
   if (e?.code === '23503') {
     return res.status(409).json({ success: false, error: 'Conflict' });
   }
 
-  console.error(fallbackMsg, {
-    code: e?.code,
-    message: e?.message,
-  });
-
+  console.error(fallbackMsg, { code: e?.code, message: e?.message });
   return safeServerError(res);
+}
+
+// --- GST helpers ---
+function parseBoolStrict(v: unknown): boolean | null {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v === 1 ? true : v === 0 ? false : null;
+  const s = String(v ?? '').trim().toLowerCase();
+  if (s === 'true' || s === '1' || s === 'yes') return true;
+  if (s === 'false' || s === '0' || s === 'no') return false;
+  return null;
+}
+
+function parseNumberStrict(v: unknown): number | null {
+  if (v === undefined || v === null || v === '') return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const s = String(v).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
  * GET /api/branches
+ * ✅ includes gst_enabled / gst_rate when migration 011 exists
+ * ✅ fallback to old select if columns don't exist yet (42703)
  */
-router.get('/', async (_req, res) => {
+router.get('/', async (_req: Request, res: Response) => {
   try {
-    const result = await query(
-      `SELECT id, name, code, address, phone, email, is_active, created_at, updated_at
-       FROM branches
-       ORDER BY created_at DESC`
-    );
-
-    return res.json({ success: true, data: result.rows });
+    try {
+      const result = await query(
+        `SELECT id, name, code, address, phone, email, is_active, gst_enabled, gst_rate, created_at, updated_at
+         FROM branches
+         ORDER BY created_at DESC`
+      );
+      return res.json({ success: true, data: result.rows });
+    } catch (e: any) {
+      // If migration 011 not applied yet, don't break the app
+      if (e?.code === '42703') {
+        const result = await query(
+          `SELECT id, name, code, address, phone, email, is_active, created_at, updated_at
+           FROM branches
+           ORDER BY created_at DESC`
+        );
+        return res.json({ success: true, data: result.rows });
+      }
+      throw e;
+    }
   } catch (e: any) {
     console.error('Failed to load branches', { code: e?.code, message: e?.message });
     return safeServerError(res);
@@ -75,15 +106,17 @@ router.get('/', async (_req, res) => {
 /**
  * POST /api/branches
  */
-router.post('/', async (req, res) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
 
     const name = String(body.name || '').trim();
     const code = normalizeCode(String(body.code || ''));
-    const address = String(body.address || '').trim();
-    const phone = String(body.phone || '').trim();
-    const email = String(body.email || '').trim();
+    const address = normalizeOptionalText(body.address, 500);
+    const phone = normalizeOptionalText(body.phone, 80);
+    const emailRaw = normalizeOptionalText(body.email, 254);
+    const email = emailRaw ? emailRaw.toLowerCase() : null;
+
     const is_active = typeof body.is_active === 'boolean' ? body.is_active : true;
 
     if (!name || !code) {
@@ -100,12 +133,6 @@ router.post('/', async (req, res) => {
     }
     if (email && (!isValidEmail(email) || email.length > 254)) {
       return res.status(400).json({ success: false, error: 'invalid email' });
-    }
-    if (phone && phone.length > 80) {
-      return res.status(400).json({ success: false, error: 'phone too long' });
-    }
-    if (address.length > 500) {
-      return res.status(400).json({ success: false, error: 'address too long' });
     }
 
     const id = crypto.randomUUID();
@@ -125,21 +152,42 @@ router.post('/', async (req, res) => {
 
 /**
  * PUT /api/branches/:id
+ * ✅ patched:
+ * - prevents accidental wiping of optional fields if client omits them
+ * - empty strings clear to NULL
  */
-router.put('/:id', async (req, res) => {
+router.put('/:id', async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id || '').trim();
     if (!id || !isUuid(id)) {
       return res.status(400).json({ success: false, error: 'Invalid branch id' });
     }
 
+    // Load existing to avoid wiping fields on partial PUTs
+    const existing = await query(
+      `SELECT id, name, code, address, phone, email, is_active
+       FROM branches
+       WHERE id = $1
+       LIMIT 1`,
+      [id]
+    );
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Branch not found' });
+    }
+    const ex = existing.rows[0];
+
     const body = req.body || {};
-    const name = String(body.name || '').trim();
-    const code = normalizeCode(String(body.code || ''));
-    const address = String(body.address || '').trim();
-    const phone = String(body.phone || '').trim();
-    const email = String(body.email || '').trim();
-    const is_active = typeof body.is_active === 'boolean' ? body.is_active : true;
+
+    const name = body.name === undefined ? String(ex.name || '').trim() : String(body.name || '').trim();
+    const code = body.code === undefined ? normalizeCode(String(ex.code || '')) : normalizeCode(String(body.code || ''));
+
+    const address = body.address === undefined ? (ex.address ?? null) : normalizeOptionalText(body.address, 500);
+    const phone = body.phone === undefined ? (ex.phone ?? null) : normalizeOptionalText(body.phone, 80);
+
+    const emailRaw = body.email === undefined ? (ex.email ?? null) : normalizeOptionalText(body.email, 254);
+    const email = emailRaw ? String(emailRaw).toLowerCase() : null;
+
+    const is_active = body.is_active === undefined ? !!ex.is_active : !!body.is_active;
 
     if (!name || !code) {
       return res.status(400).json({ success: false, error: 'name and code are required' });
@@ -156,12 +204,6 @@ router.put('/:id', async (req, res) => {
     if (email && (!isValidEmail(email) || email.length > 254)) {
       return res.status(400).json({ success: false, error: 'invalid email' });
     }
-    if (phone && phone.length > 80) {
-      return res.status(400).json({ success: false, error: 'phone too long' });
-    }
-    if (address.length > 500) {
-      return res.status(400).json({ success: false, error: 'address too long' });
-    }
 
     const result = await query(
       `UPDATE branches
@@ -170,10 +212,6 @@ router.put('/:id', async (req, res) => {
        RETURNING id, name, code, address, phone, email, is_active, created_at, updated_at`,
       [id, name, code, address, phone, email, is_active]
     );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, error: 'Branch not found' });
-    }
 
     return res.json({ success: true, data: result.rows[0] });
   } catch (e: any) {
@@ -184,9 +222,9 @@ router.put('/:id', async (req, res) => {
 /**
  * PATCH /api/branches/:id/status
  */
-router.patch('/:id/status', async (req, res) => {
+router.patch('/:id/status', async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id || '').trim();
     if (!id || !isUuid(id)) {
       return res.status(400).json({ success: false, error: 'Invalid branch id' });
     }
@@ -211,6 +249,72 @@ router.patch('/:id/status', async (req, res) => {
     return res.json({ success: true, data: result.rows[0] });
   } catch (e: any) {
     console.error('Failed to update branch status', { code: e?.code, message: e?.message });
+    return safeServerError(res);
+  }
+});
+
+/**
+ * PATCH /api/branches/:id/gst
+ * ✅ Admin-only: toggle GST and set rate (%)
+ *
+ * Body examples:
+ *  { "gst_enabled": true, "gst_rate": 18 }
+ *  { "gst_enabled": false }
+ */
+router.patch('/:id/gst', requireRole(['admin']), async (req: Request, res: Response) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id || !isUuid(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid branch id' });
+    }
+
+    const body = req.body || {};
+
+    const enabledRaw = (body as any).gst_enabled ?? (body as any).gstEnabled;
+    const gst_enabled = parseBoolStrict(enabledRaw);
+    if (gst_enabled === null) {
+      return res.status(400).json({ success: false, error: 'gst_enabled must be a boolean' });
+    }
+
+    const rateRaw = (body as any).gst_rate ?? (body as any).gstRate;
+    let gst_rate: number;
+
+    if (gst_enabled) {
+      const parsed = rateRaw === undefined ? 18 : parseNumberStrict(rateRaw);
+      if (parsed === null) {
+        return res.status(400).json({ success: false, error: 'gst_rate must be a number' });
+      }
+      if (parsed < 0 || parsed > 100) {
+        return res.status(400).json({ success: false, error: 'gst_rate must be between 0 and 100' });
+      }
+      gst_rate = Number(parsed.toFixed(2));
+    } else {
+      gst_rate = 0;
+    }
+
+    const result = await query(
+      `
+      UPDATE branches
+      SET gst_enabled = $2, gst_rate = $3, updated_at = NOW()
+      WHERE id = $1
+      RETURNING id, name, code, gst_enabled, gst_rate, updated_at
+      `,
+      [id, gst_enabled, gst_rate]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Branch not found' });
+    }
+
+    return res.json({ success: true, data: result.rows[0] });
+  } catch (e: any) {
+    if (e?.code === '42703') {
+      return res.status(409).json({
+        success: false,
+        error: 'GST columns not found. Apply the GST migration first (gst_enabled + gst_rate on branches).',
+      });
+    }
+    console.error('Failed to update branch GST', { code: e?.code, message: e?.message });
     return safeServerError(res);
   }
 });

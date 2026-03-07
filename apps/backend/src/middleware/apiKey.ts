@@ -1,3 +1,4 @@
+// apps/backend/src/apiKey.ts
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import net from 'node:net';
@@ -16,17 +17,16 @@ export interface ApiKeyRequest extends Request {
 // In-memory rate limiting + last_used throttling (OK for single instance).
 // If you run multiple backend instances, move this to Redis.
 const RATE_WINDOW_MS = 60_000;
-const rateState = new Map<string, { windowStart: number; count: number }>();
+const RATE_IDLE_CLEANUP_MS = 15 * 60_000; // cleanup idle keys after 15min
+const rateState = new Map<string, { windowStart: number; count: number; lastSeen: number }>();
 const lastUsedTouch = new Map<string, number>();
 
 function hashApiKey(apiKey: string): string {
-  // Optional pepper (recommended). If not set, it still works.
   const pepper = process.env.API_KEY_PEPPER || '';
   return crypto.createHash('sha256').update(`${pepper}${apiKey}`).digest('hex');
 }
 
 function getClientIp(req: Request): string | null {
-  // Only trust forwarded headers if you explicitly enabled trust proxy.
   const trustProxy = !!req.app.get('trust proxy');
 
   let ip: string | undefined;
@@ -34,7 +34,7 @@ function getClientIp(req: Request): string | null {
   if (trustProxy) {
     const xff = req.headers['x-forwarded-for'];
     if (typeof xff === 'string' && xff.trim()) {
-      ip = xff.split(',')[0].trim(); // first IP is the client
+      ip = xff.split(',')[0].trim();
     } else {
       const xri = req.headers['x-real-ip'];
       if (typeof xri === 'string' && xri.trim()) ip = xri.trim();
@@ -44,10 +44,8 @@ function getClientIp(req: Request): string | null {
   ip = ip || req.ip || req.socket?.remoteAddress || undefined;
   if (!ip) return null;
 
-  // Normalize IPv4-mapped IPv6 like ::ffff:127.0.0.1
   if (ip.startsWith('::ffff:')) ip = ip.slice(7);
 
-  // Strip port if present (e.g. 1.2.3.4:1234 or [::1]:1234)
   const bracketMatch = ip.match(/^\[([0-9a-fA-F:]+)\]:(\d+)$/);
   if (bracketMatch) ip = bracketMatch[1];
 
@@ -78,7 +76,6 @@ function ipv4CidrMatch(ip: string, cidr: string): boolean {
 }
 
 function isWhitelisted(ip: string, whitelist: string[]): boolean {
-  // Exact match OR IPv4 CIDR match (e.g. 10.0.0.0/24)
   for (const entryRaw of whitelist) {
     const entry = String(entryRaw || '').trim();
     if (!entry) continue;
@@ -93,15 +90,27 @@ function isWhitelisted(ip: string, whitelist: string[]): boolean {
 }
 
 function normalizeArrayField(v: any): string[] {
-  if (Array.isArray(v)) return v.map(String);
+  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
+
   if (typeof v === 'string') {
     // support JSON stored as string
     try {
       const parsed = JSON.parse(v);
-      if (Array.isArray(parsed)) return parsed.map(String);
+      if (Array.isArray(parsed)) return parsed.map((x) => String(x).trim()).filter(Boolean);
     } catch {}
   }
+
   return [];
+}
+
+function cleanupRateMaps(now: number) {
+  // Remove idle entries to prevent memory growth
+  for (const [k, s] of rateState.entries()) {
+    if (now - s.lastSeen > RATE_IDLE_CLEANUP_MS) rateState.delete(k);
+  }
+  for (const [k, last] of lastUsedTouch.entries()) {
+    if (now - last > RATE_IDLE_CLEANUP_MS) lastUsedTouch.delete(k);
+  }
 }
 
 export const verifyApiKey = async (req: ApiKeyRequest, res: Response, next: NextFunction) => {
@@ -117,6 +126,9 @@ export const verifyApiKey = async (req: ApiKeyRequest, res: Response, next: Next
   }
 
   try {
+    const now = Date.now();
+    cleanupRateMaps(now);
+
     const keyHash = hashApiKey(apiKey);
 
     const result = await query(
@@ -151,21 +163,32 @@ export const verifyApiKey = async (req: ApiKeyRequest, res: Response, next: Next
     // Rate limit enforcement (requests per minute per API key)
     const limit = Number(row.rate_limit || 0); // 0 => no limit
     if (Number.isFinite(limit) && limit > 0) {
-      const now = Date.now();
       const state = rateState.get(row.id);
 
       if (!state || now - state.windowStart >= RATE_WINDOW_MS) {
-        rateState.set(row.id, { windowStart: now, count: 1 });
+        const windowStart = now;
+        rateState.set(row.id, { windowStart, count: 1, lastSeen: now });
+
+        res.setHeader('X-RateLimit-Limit', String(limit));
+        res.setHeader('X-RateLimit-Remaining', String(Math.max(0, limit - 1)));
+        res.setHeader('X-RateLimit-Reset', String(Math.ceil((windowStart + RATE_WINDOW_MS) / 1000)));
       } else {
         state.count += 1;
+        state.lastSeen = now;
+
+        const remaining = Math.max(0, limit - state.count);
+        res.setHeader('X-RateLimit-Limit', String(limit));
+        res.setHeader('X-RateLimit-Remaining', String(remaining));
+        res.setHeader('X-RateLimit-Reset', String(Math.ceil((state.windowStart + RATE_WINDOW_MS) / 1000)));
+
         if (state.count > limit) {
+          res.setHeader('Retry-After', String(Math.ceil((state.windowStart + RATE_WINDOW_MS - now) / 1000)));
           return res.status(429).json({ success: false, error: 'Rate limit exceeded' });
         }
       }
     }
 
     // Avoid writing last_used_at on every request (write amplification)
-    const now = Date.now();
     const lastTouch = lastUsedTouch.get(row.id) || 0;
     if (now - lastTouch > 60_000) {
       lastUsedTouch.set(row.id, now);
@@ -181,8 +204,8 @@ export const verifyApiKey = async (req: ApiKeyRequest, res: Response, next: Next
     };
 
     next();
-  } catch (error) {
-    console.error('API key verification error:', error);
+  } catch (error: any) {
+    console.error('API key verification error:', { message: error?.message, code: error?.code });
     return res.status(500).json({ success: false, error: 'Internal server error' });
   }
 };
@@ -232,7 +255,7 @@ export async function logApiCall(
         durationMs,
       ]
     );
-  } catch (error) {
-    console.error('Error logging API call:', error);
+  } catch (error: any) {
+    console.error('Error logging API call:', { message: error?.message, code: error?.code });
   }
 }

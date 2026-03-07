@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Scale } from 'lucide-react';
 
@@ -9,22 +9,29 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
 
   const [error, setError] = useState<string>('');
-  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (loading) return;
+    if (submitting) return;
 
     setError('');
-    setLoading(true);
 
     const cleanedEmail = String(email || '').trim().toLowerCase();
     const cleanedPassword = String(password || '');
 
-    const result = await signIn(cleanedEmail, cleanedPassword);
+    if (!cleanedEmail || !cleanedPassword) {
+      setError('Email and password are required.');
+      return;
+    }
 
-    if (result.error) setError(result.error);
-    setLoading(false);
+    setSubmitting(true);
+    try {
+      const result = await signIn(cleanedEmail, cleanedPassword);
+      if (result.error) setError(result.error);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -75,10 +82,10 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={submitting}
               className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
             >
-              {loading ? 'Signing in...' : 'Sign In'}
+              {submitting ? 'Signing in...' : 'Sign In'}
             </button>
           </form>
         </div>

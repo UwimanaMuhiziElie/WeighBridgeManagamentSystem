@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Scale } from 'lucide-react';
 
 export default function LoginPage() {
   const { signIn, isAuthenticated, loading: bootLoading } = useAuth();
+  const navigate = useNavigate();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -17,10 +19,9 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!bootLoading && isAuthenticated) {
-      // Safe redirect without relying on router
-      window.location.replace('/');
+      navigate('/', { replace: true });
     }
-  }, [bootLoading, isAuthenticated]);
+  }, [bootLoading, isAuthenticated, navigate]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -31,7 +32,7 @@ export default function LoginPage() {
 
     try {
       await signIn(email.trim(), password);
-      window.location.replace('/');
+      navigate('/', { replace: true });
     } catch (err: any) {
       setError(err?.message || 'Failed to sign in');
     } finally {
@@ -49,12 +50,8 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <h1 className="text-3xl font-bold text-center text-gray-900 mb-2">
-            Weighbridge Admin
-          </h1>
-          <p className="text-center text-gray-600 mb-8">
-            Sign in to manage your weighbridge system
-          </p>
+          <h1 className="text-3xl font-bold text-center text-gray-900 mb-2">Weighbridge Portal</h1>
+          <p className="text-center text-gray-600 mb-8">Sign in to continue</p>
 
           <form onSubmit={handleSubmit} className="space-y-6">
             {error && (
@@ -74,7 +71,7 @@ export default function LoginPage() {
                 autoComplete="email"
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow"
-                placeholder="admin@example.com"
+                placeholder="name@example.com"
                 required
               />
             </div>
@@ -105,7 +102,7 @@ export default function LoginPage() {
           </form>
 
           <div className="mt-6 text-center text-sm text-gray-600">
-            <p>Admin access only</p>
+            <p>Use your assigned portal account</p>
           </div>
         </div>
       </div>

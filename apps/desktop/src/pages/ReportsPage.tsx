@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { BarChart3, RefreshCcw, AlertTriangle, Download } from 'lucide-react';
+// apps/desktop/src/pages/ReportsPage.tsx
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { BarChart3, RefreshCcw, AlertTriangle, Download, FileText } from 'lucide-react';
 import { apiClient } from '@weighbridge/shared/lib/apiClient';
 import ReportFilters, { ReportFiltersValue } from '../components/ReportFilters';
 
@@ -11,6 +12,9 @@ type TransactionRow = {
   created_at?: string;
   company_name?: string;
   license_plate?: string;
+
+  // ✅ best-effort: backend may already send this
+  client_id?: string;
 };
 
 function num(v: unknown, fallback = 0) {
@@ -18,18 +22,31 @@ function num(v: unknown, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-async function safeGetArray<T = any>(endpoint: string): Promise<T[]> {
-  const resp = await apiClient.get<any>(endpoint);
-  if ((resp as any)?.error) throw new Error((resp as any).error);
+function pickErrorMessage(resp: any): string | null {
+  if (!resp) return 'Request failed';
+  if (resp.error) return String(resp.error);
+  if (resp.success === false) return String(resp.error || resp.message || 'Request failed');
+  return null;
+}
 
-  const data = (resp as any)?.data ?? resp;
+function unwrapArray<T>(resp: any): T[] {
+  const root = resp?.data ?? resp;
+
   const arr =
-    Array.isArray(data) ? data :
-    Array.isArray(data?.data) ? data.data :
-    Array.isArray(data?.rows) ? data.rows :
+    Array.isArray(root) ? root :
+    Array.isArray(root?.data) ? root.data :
+    Array.isArray(root?.rows) ? root.rows :
+    Array.isArray(root?.data?.rows) ? root.data.rows :
     [];
 
   return Array.isArray(arr) ? (arr as T[]) : [];
+}
+
+async function safeGetArray<T = any>(endpoint: string): Promise<T[]> {
+  const resp = await apiClient.get<any>(endpoint);
+  const err = pickErrorMessage(resp);
+  if (err) throw new Error(err);
+  return unwrapArray<T>(resp);
 }
 
 function isNotFoundOrNotImplemented(msg: string) {
@@ -45,10 +62,8 @@ function toMsRange(from: string, to: string) {
 
 function downloadCsv(filename: string, rows: Record<string, any>[]) {
   const keys = Object.keys(rows[0] || {});
-  const lines = [
-    keys.join(','),
-    ...rows.map((r) => keys.map((k) => JSON.stringify(r[k] ?? '')).join(',')),
-  ];
+  const lines = [keys.join(','), ...rows.map((r) => keys.map((k) => JSON.stringify(r[k] ?? '')).join(','))];
+
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
 
@@ -62,11 +77,54 @@ function downloadCsv(filename: string, rows: Record<string, any>[]) {
   URL.revokeObjectURL(url);
 }
 
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function buildTxQuery(f: ReportFiltersValue) {
+  const qs = new URLSearchParams();
+  qs.set('limit', '500');
+  qs.set('from', f.from);
+  qs.set('to', f.to);
+
+  if (f.status) qs.set('status', f.status);
+
+  // best-effort: backend may ignore, but safe to send
+  if (f.client_id) qs.set('client_id', f.client_id);
+
+  return `/api/transactions?${qs.toString()}`;
+}
+
+function b64ToBlob(base64: string, mime: string) {
+  const clean = base64.includes('base64,') ? base64.split('base64,')[1] : base64;
+  const bin = atob(clean);
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+function downloadBlob(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function ReportsPage() {
   const [filters, setFilters] = useState<ReportFiltersValue>(() => {
-    const t = new Date().toISOString().slice(0, 10);
-    return { from: t, to: t, status: '' };
+    const t = todayISO();
+    return { from: t, to: t, status: '', client_id: '' };
   });
+
+  const filtersRef = useRef(filters);
+  useEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
 
   const [rows, setRows] = useState<TransactionRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -82,7 +140,12 @@ export default function ReportsPage() {
       const st = String(t.status || '').toLowerCase();
       const statusOk = filters.status ? st === filters.status : true;
 
-      return inRange && statusOk;
+      // ✅ client filter: works if backend includes client_id in rows
+      const clientOk = filters.client_id
+        ? String((t as any).client_id || '') === filters.client_id
+        : true;
+
+      return inRange && statusOk && clientOk;
     });
   }, [rows, filters]);
 
@@ -93,14 +156,14 @@ export default function ReportsPage() {
     return { totalTx, completed, totalNet };
   }, [filtered]);
 
-  async function load() {
+  async function load(next?: ReportFiltersValue) {
+    const f = next ?? filtersRef.current;
+
     setError('');
     setLoading(true);
+
     try {
-      // If backend supports date filters later, keep this signature.
-      const data = await safeGetArray<TransactionRow>(
-        `/api/transactions?limit=500&from=${encodeURIComponent(filters.from)}&to=${encodeURIComponent(filters.to)}`
-      );
+      const data = await safeGetArray<TransactionRow>(buildTxQuery(f));
       setRows(data);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Failed to load report data';
@@ -115,8 +178,45 @@ export default function ReportsPage() {
     }
   }
 
+  async function downloadClientStatementPdf() {
+    const f = filtersRef.current;
+
+    if (!f.client_id) {
+      setError('Select a client first, then click PDF Statement.');
+      return;
+    }
+
+    setError('');
+
+    try {
+      const qs = new URLSearchParams({
+        from: f.from,
+        to: f.to,
+        client_id: f.client_id,
+        unpaid_only: '1',
+      });
+
+      const resp = await apiClient.get<any>(`/api/reports/client-statement?${qs.toString()}`);
+      const err = pickErrorMessage(resp);
+      if (err) throw new Error(err);
+
+      const data = resp?.data ?? resp;
+      const base64 = data?.base64 || data?.pdf_base64 || data?.data?.base64;
+      const filename = data?.filename || `statement_${f.from}_to_${f.to}.pdf`;
+      const mime = data?.mime || 'application/pdf';
+
+      if (!base64) throw new Error('Statement PDF payload missing (base64 not found).');
+
+      const blob = b64ToBlob(String(base64), String(mime));
+      downloadBlob(String(filename), blob);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to download statement PDF';
+      setError(msg);
+    }
+  }
+
   useEffect(() => {
-    void load();
+    void load(filtersRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -141,16 +241,30 @@ export default function ReportsPage() {
 
           <button
             type="button"
+            onClick={() => void downloadClientStatementPdf()}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-900 text-white hover:bg-black disabled:opacity-50"
+            disabled={!filters.client_id}
+            title={!filters.client_id ? 'Select a client to enable PDF Statement' : 'Download monthly unpaid statement'}
+          >
+            <FileText className="w-4 h-4" />
+            PDF Statement
+          </button>
+
+          <button
+            type="button"
             onClick={() => {
               if (filtered.length === 0) return;
-              downloadCsv(`operator-report-${filters.from}-to-${filters.to}.csv`, filtered.map((t) => ({
-                transaction_number: t.transaction_number || '',
-                status: t.status || '',
-                net_weight: num(t.net_weight, 0),
-                client: t.company_name || '',
-                vehicle: t.license_plate || '',
-                created_at: t.created_at || '',
-              })));
+              downloadCsv(
+                `operator-report-${filters.from}-to-${filters.to}.csv`,
+                filtered.map((t) => ({
+                  transaction_number: t.transaction_number || '',
+                  status: t.status || '',
+                  net_weight: num(t.net_weight, 0),
+                  client: t.company_name || '',
+                  vehicle: t.license_plate || '',
+                  created_at: t.created_at || '',
+                }))
+              );
             }}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
             disabled={filtered.length === 0}
@@ -172,8 +286,15 @@ export default function ReportsPage() {
         <ReportFilters
           value={filters}
           onChange={setFilters}
-          onApply={() => void load()}
-          onClear={() => void load()}
+          onApply={(v) => {
+            setFilters(v);
+            void load(v);
+          }}
+          onClear={() => {
+            const cleared: ReportFiltersValue = { from: todayISO(), to: todayISO(), status: '', client_id: '' };
+            setFilters(cleared);
+            void load(cleared);
+          }}
         />
       </div>
 
@@ -188,7 +309,9 @@ export default function ReportsPage() {
         </div>
         <div className="bg-white border border-gray-200 rounded-xl p-5">
           <div className="text-sm text-gray-500">Total net weight</div>
-          <div className="mt-2 text-2xl font-bold text-gray-900">{loading ? '—' : `${summary.totalNet.toFixed(2)} kg`}</div>
+          <div className="mt-2 text-2xl font-bold text-gray-900">
+            {loading ? '—' : `${summary.totalNet.toFixed(2)} kg`}
+          </div>
         </div>
       </div>
 

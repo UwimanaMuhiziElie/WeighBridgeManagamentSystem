@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import LoginPage from './pages/LoginPage';
 import Dashboard from './pages/Dashboard';
@@ -14,10 +13,7 @@ function AppContent() {
     );
   }
 
-  if (!user) {
-    return <LoginPage />;
-  }
-
+  if (!user) return <LoginPage />;
   return <Dashboard />;
 }
 
