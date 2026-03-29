@@ -16,7 +16,7 @@ const electronExternal = [
 ];
 
 export default defineConfig({
-  // ✅ important for Electron packaged builds (file://)
+  // important for Electron packaged builds (file://)
   base: './',
 
   plugins: [
@@ -42,7 +42,7 @@ export default defineConfig({
       },
     }),
 
-    // ✅ better handling of node builtins / electron in renderer
+    // better handling of node builtins / electron in renderer
     electronRenderer(),
   ],
 

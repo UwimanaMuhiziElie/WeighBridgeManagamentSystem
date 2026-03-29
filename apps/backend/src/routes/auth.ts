@@ -265,7 +265,7 @@ router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
   }
 });
 
-// ✅ GET /auth/me  (token required)
+//  GET /auth/me  (token required)
 router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.id;

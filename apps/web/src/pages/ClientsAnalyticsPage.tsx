@@ -42,7 +42,7 @@ function isForbiddenError(msg: string) {
   return m.includes('forbidden') || m.includes('403') || m.includes('request failed (403)');
 }
 
-// ✅ timezone-safe YYYY-MM-DD for <input type="date">
+// timezone-safe YYYY-MM-DD for <input type="date">
 function toDateInputValue(d: Date) {
   const x = new Date(d);
   const y = x.getFullYear();
@@ -173,7 +173,7 @@ export default function ClientsAnalyticsPage() {
       qs.set('from', from);
       qs.set('to', to);
 
-      // ✅ backend rule: only admin can switch branch context
+      // backend rule: only admin can switch branch context
       if (isAdmin && selectedBranch) qs.set('branch_id', selectedBranch);
 
       const resp = await apiClient.get(`/api/analytics/clients?${qs.toString()}`);
@@ -300,7 +300,7 @@ export default function ClientsAnalyticsPage() {
         <div className="md:col-span-2">
           <label className="block text-sm font-medium text-gray-700 mb-1">Branch</label>
 
-          {/* ✅ Only admin can change branch context. Manager/operator are forced to own branch. */}
+          {/* Only admin can change branch context. Manager/operator are forced to own branch. */}
           <select
             value={isAdmin ? selectedBranch : ''}
             onChange={(e) => setSelectedBranch(e.target.value)}

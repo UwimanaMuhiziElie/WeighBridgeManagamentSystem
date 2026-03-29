@@ -708,6 +708,11 @@ function clamp(n: number, min: number, max: number) {
   return Math.min(Math.max(n, min), max);
 }
 
+function getReceiptSafeInsetPt() {
+  const mm = Number(process.env.PDF_RECEIPT_SAFE_INSET_MM || 2);
+  return mmToPt(clamp(mm, 0, 5));
+}
+
 function parseFloatStrict(v: unknown): number | null {
   if (v === undefined || v === null || v === '') return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -729,9 +734,6 @@ function parseFloatStrict(v: unknown): number | null {
  * - supports PDF_RECEIPT_HEIGHT_MM=auto
  * - supports suggestedHeightMm (auto estimate from route)
  */
-// ✅ PATCH ONLY: change height precedence so AUTO beats env (unless ?height_mm=...)
-// Replace ONLY the height selection block inside getReceiptPageSizeFromReq()
-
 function getReceiptPageSizeFromReq(req?: AuthRequest, suggestedHeightMm?: number) {
   const q: any = (req as any)?.query ?? {};
 
@@ -742,32 +744,24 @@ function getReceiptPageSizeFromReq(req?: AuthRequest, suggestedHeightMm?: number
   const envHeightRaw = String(process.env.PDF_RECEIPT_HEIGHT_MM || '170').trim();
   const envHeight = envHeightRaw.toLowerCase() === 'auto' ? NaN : Number(envHeightRaw || 170);
 
-  const envMargin = Number(process.env.PDF_RECEIPT_MARGIN_MM || 2);
+  const envMargin = Number(process.env.PDF_RECEIPT_MARGIN_MM || 0);
 
   const widthMmIn =
     parseFloatStrict(q.paper_mm) ??
     parseFloatStrict(q.width_mm) ??
     (Number.isFinite(envWidth) ? envWidth : 72);
 
-  // ✅ FIXED precedence:
-  // If height_mm not provided, prefer:
-  // 1) suggestedHeightMm (auto estimate)
-  // 2) env height (if numeric)
-  // 3) fallback 170
+  const suggestedH = Number(suggestedHeightMm);
   const heightMmIn =
     parseFloatStrict(q.height_mm) ??
-    (Number.isFinite(suggestedHeightMm) ? suggestedHeightMm : Number.isFinite(envHeight) ? envHeight : 170);
+    (Number.isFinite(suggestedH) ? suggestedH : Number.isFinite(envHeight) ? envHeight : 170);
 
-  const marginMmIn =
-    parseFloatStrict(q.margin_mm) ??
-    (Number.isFinite(envMargin) ? envMargin : 2);
+  const marginMmIn = parseFloatStrict(q.margin_mm) ?? (Number.isFinite(envMargin) ? envMargin : 0);
 
-  // Clamp to realistic POS ranges
   const widthMm = clamp(widthMmIn, 48, 90);
   const heightMm = clamp(heightMmIn, 80, 500);
   const marginMm = clamp(marginMmIn, 0, 8);
 
-  // Optional: legacy fallback if you used PT env before
   const heightPtRaw = Number(process.env.PDF_RECEIPT_HEIGHT_PT || 0);
 
   const widthPt = mmToPt(widthMm);
@@ -813,16 +807,20 @@ function fmtDateTimeReceipt(d: any): string {
   return [t, da].filter(Boolean).join(' ');
 }
 
-function compactTicketNumber(v: unknown): string {
+/**
+ * Keep modern yearly receipt numbers exactly as stored:
+ *   2026-00001
+ *   2027-00001
+ *
+ * For anything else, return the original trimmed string.
+ */
+function formatReceiptNumber(v: unknown): string {
   const s = String(v ?? '').trim();
   if (!s) return '';
-  const matches = [...s.matchAll(/\d+/g)].map((m) => m[0]).filter(Boolean);
-  const last = matches.length ? matches[matches.length - 1] : '';
-  if (!last) return s;
 
-  const n = Number.parseInt(last, 10);
-  if (Number.isFinite(n)) return String(n);
-  return last || s;
+  if (/^\d{4}-\d{5}$/.test(s)) return s;
+
+  return s;
 }
 
 function splitAddressLines(addrRaw: string): string[] {
@@ -880,24 +878,26 @@ type ReceiptTopOpts = {
 };
 
 function drawReceiptTopBlock(doc: PdfDoc, pageW: number, opts: ReceiptTopOpts) {
-  const marginX = doc.page.margins.left;
-  const contentW = pageW - doc.page.margins.left - doc.page.margins.right;
+  const safeInset = getReceiptSafeInsetPt();
 
-  let y = doc.page.margins.top;
+  const marginX = doc.page.margins.left + safeInset;
+  const contentW = pageW - doc.page.margins.left - doc.page.margins.right - safeInset * 2;
 
-  // Ticket number (red, TOP CENTER)
+  let y = doc.page.margins.top + safeInset + 1;
+
+  // Ticket number (top center) — kept inside printable area
   doc.save();
   doc
     .font('Helvetica-Bold')
-    .fontSize(14)
+    .fontSize(12)
     .fillColor(RECEIPT_RED)
-    .text(opts.ticketNo || '', marginX, y - 6, { width: contentW, align: 'center' });
+    .text(opts.ticketNo || '', marginX, y, { width: contentW, align: 'center' });
   doc.restore();
 
-  y += 10;
+  y += 14;
 
   // "EZ WASTE" centered, with EZ in green and WASTE in black
-  doc.font('Helvetica-Bold').fontSize(28);
+  doc.font('Helvetica-Bold').fontSize(26);
 
   const wEZ = doc.widthOfString('EZ');
   const wWaste = doc.widthOfString('WASTE');
@@ -908,12 +908,11 @@ function drawReceiptTopBlock(doc: PdfDoc, pageW: number, opts: ReceiptTopOpts) {
   doc.fillColor(RECEIPT_GREEN).text('EZ', xStart, y, { lineBreak: false });
   doc.fillColor('#111').text('WASTE', xStart + wEZ + gap, y, { lineBreak: false });
 
-  // reset after lineBreak:false
-  y += 32;
+  y += 30;
   doc.x = marginX;
   doc.y = y;
 
-  // Green bar: TRANSFER STATION (white text)
+  // Green bar: TRANSFER STATION
   const barH = 18;
   doc.save();
   doc.rect(marginX, y, contentW, barH).fill(RECEIPT_GREEN);
@@ -926,37 +925,37 @@ function drawReceiptTopBlock(doc: PdfDoc, pageW: number, opts: ReceiptTopOpts) {
 
   y += barH + 6;
 
-  // Address (black)
+  // Address
   const addrLines = splitAddressLines(String(EZ.address || process.env.EZ_ADDRESS || '2411-76 Ave NW, Edmonton, AB T6P 1P6'));
   if (addrLines.length) {
-    doc.font('Helvetica').fontSize(8.6).fillColor('#111');
+    doc.font('Helvetica').fontSize(8.4).fillColor('#111');
     for (const line of addrLines) {
       doc.text(line, marginX, y, { width: contentW, align: 'center' });
       y = doc.y;
     }
   }
 
-  // Phone (green, centered)
+  // Phone
   const phone = String(EZ.phone || process.env.EZ_PHONE || '780-915-1998').trim();
   if (phone) {
-    doc.fillColor(RECEIPT_GREEN).font('Helvetica-Bold').fontSize(9.4);
+    doc.fillColor(RECEIPT_GREEN).font('Helvetica-Bold').fontSize(9.2);
     doc.text(`Ph: ${phone}`, marginX, y, { width: contentW, align: 'center' });
     y = doc.y;
   }
 
-  // Email (black, centered under phone)
+  // Email
   const email = String(EZ.email || process.env.EZ_EMAIL || 'customersupport@ezwm.ca').trim();
   if (email) {
-    doc.fillColor('#111').font('Helvetica').fontSize(8.2);
+    doc.fillColor('#111').font('Helvetica').fontSize(8.1);
     doc.text(`Email: ${email}`, marginX, y, { width: contentW, align: 'center' });
     y = doc.y;
   }
 
   y += 6;
 
-  // Location pill (green, centered)
+  // Location pill
   const pillText = (opts.locationLabel || 'SOUTHSIDE LOCATION').toUpperCase();
-  const pillW = contentW * 0.82;
+  const pillW = contentW * 0.78;
   const pillH = 18;
   const pillX = marginX + (contentW - pillW) / 2;
 
@@ -971,7 +970,7 @@ function drawReceiptTopBlock(doc: PdfDoc, pageW: number, opts: ReceiptTopOpts) {
 
   y += pillH + 8;
 
-  // "EZ WASTE MANAGEMENT" (faint under pill)
+  // Faint watermark text
   doc.save();
   doc.opacity(0.35);
   doc.font('Helvetica-Bold').fontSize(10).fillColor('#999');
@@ -983,12 +982,13 @@ function drawReceiptTopBlock(doc: PdfDoc, pageW: number, opts: ReceiptTopOpts) {
   doc.x = marginX;
   doc.y = y;
 
-  return y; // bodyTopY
+  return y;
 }
 
 function drawReceiptCenteredLine(doc: PdfDoc, pageW: number, text: string, y: number, color = '#111', size = 9) {
-  const marginX = doc.page.margins.left;
-  const contentW = pageW - doc.page.margins.left - doc.page.margins.right;
+  const safeInset = getReceiptSafeInsetPt();
+  const marginX = doc.page.margins.left + safeInset;
+  const contentW = pageW - doc.page.margins.left - doc.page.margins.right - safeInset * 2;
 
   doc.font('Helvetica').fontSize(size).fillColor(color);
   doc.text(text, marginX, y, { width: contentW, align: 'center' });
@@ -997,8 +997,9 @@ function drawReceiptCenteredLine(doc: PdfDoc, pageW: number, text: string, y: nu
 }
 
 function drawLineField(doc: PdfDoc, label: string, value?: string) {
-  const x = doc.page.margins.left;
-  const right = doc.page.width - doc.page.margins.right;
+  const safeInset = getReceiptSafeInsetPt();
+  const x = doc.page.margins.left + safeInset;
+  const right = doc.page.width - doc.page.margins.right - safeInset;
   const y = doc.y;
 
   doc.font('Helvetica').fontSize(9).fillColor('#111').text(label, x, y, { lineBreak: false });
@@ -1093,16 +1094,13 @@ function drawReceiptWeighingInfoBlock(doc: PdfDoc, pageW: number, row: any, star
  * AUTO height estimation (to avoid long blank receipts)
  */
 function estimateReceiptHeightMm(row: any) {
-  // ---- HEADER (matches drawReceiptTopBlock increments) ----
   const addrLines = splitAddressLines(
     String(EZ.address || process.env.EZ_ADDRESS || '2411-76 Ave NW, Edmonton, AB T6P 1P6')
   );
 
-  // In points (PDFKit uses points)
-  const headerPtsBase = 137; // constant parts from drawReceiptTopBlock
-  const headerPts = headerPtsBase + addrLines.length * 10; // ~10pt per addr line
+  const headerPtsBase = 137;
+  const headerPts = headerPtsBase + addrLines.length * 10;
 
-  // ---- WEIGHING block (matches drawReceiptWeighingInfoBlock) ----
   const truckId = resolveReceiptTruckId(row);
 
   const inboundAt = row.first_weight_time || row.created_at || row.invoice_date;
@@ -1116,38 +1114,25 @@ function estimateReceiptHeightMm(row: any) {
 
   let weighPts = 0;
 
-  // inbound lines: timestamp, truck id, scale weight
   if (fmtDateTimeReceipt(inboundAt)) weighPts += 10;
   if (truckId) weighPts += 10;
   if (Number.isFinite(inboundWeight) && inboundWeight > 0) weighPts += 10;
 
   if (hasOutbound) {
-    // y += 10 (gap)
     weighPts += 10;
-
-    // outbound lines: timestamp + truck id
     if (fmtDateTimeReceipt(outboundAt)) weighPts += 10;
     if (truckId) weighPts += 10;
-
-    // y += 8 before gross/tare
     weighPts += 8;
-
-    // gross + tare (2 lines)
     weighPts += 20;
   }
 
-  // ---- AFTER weighing block ----
-  // moveDown(1.0) + separator + moveDown(0.8) + Net line + moveDown(0.6)
-  // + 4 lineFields + bottom pad
   const afterPts = 97;
 
   const contentPts = headerPts + weighPts + afterPts;
   const contentMm = ptToMm(contentPts);
 
-  // Safety cushion for cutter
   const safeExtraMm = 12;
 
-  // keep within a sane POS range
   return clamp(contentMm + safeExtraMm, 90, 260);
 }
 
@@ -1155,8 +1140,10 @@ function estimateReceiptHeightMm(row: any) {
  * OPTIONAL: simple/plain receipt style (only used when explicitly requested with ?style=simple)
  */
 function drawSimpleWeighingReceipt(doc: PdfDoc, pageW: number, row: any) {
-  const left = doc.page.margins.left;
-  const contentW = pageW - doc.page.margins.left - doc.page.margins.right;
+  const safeInset = getReceiptSafeInsetPt();
+  const left = doc.page.margins.left + safeInset;
+  const contentW = pageW - doc.page.margins.left - doc.page.margins.right - safeInset * 2;
+
   const truckId = resolveReceiptTruckId(row);
   const w1 = num(row.first_weight, NaN);
   const w2 = num(row.second_weight, NaN);
@@ -1182,7 +1169,7 @@ function drawSimpleWeighingReceipt(doc: PdfDoc, pageW: number, row: any) {
 
   doc.save();
   doc.strokeColor('#111').lineWidth(0.7);
-  doc.moveTo(left, doc.y).lineTo(pageW - doc.page.margins.right, doc.y).stroke();
+  doc.moveTo(left, doc.y).lineTo(left + contentW, doc.y).stroke();
   doc.restore();
 
   doc.moveDown(0.6);
@@ -1590,7 +1577,7 @@ router.get('/:id/pdf', async (req: AuthRequest, res: Response) => {
   const id = String(req.params.id || '').trim();
   if (!isUuid(id)) return badRequest(res, 'id must be a UUID');
 
-  let doc: PDFDocument | null = null;
+  let doc: PdfDoc | null = null;
   let ended = false;
 
   const safeEndDoc = () => {
@@ -1606,15 +1593,13 @@ router.get('/:id/pdf', async (req: AuthRequest, res: Response) => {
     if (invoiceResult.rows.length === 0) return notFound(res, 'Invoice not found');
     const row = invoiceResult.rows[0];
 
-    // FULL default (ignore env)
     const style = String(req.query.style ?? 'full').toLowerCase();
     const styleLabel = style === 'simple' ? 'simple' : 'full';
 
-    // ✅ Auto-fit height unless user explicitly passed ?height_mm=...
     const autoHeightMm = estimateReceiptHeightMm(row);
     const { widthPt, heightPt, marginPt, widthMm, heightMm, marginMm } = getReceiptPageSizeFromReq(req, autoHeightMm);
 
-    const ticketNo = compactTicketNumber(row.invoice_number) || compactTicketNumber(row.transaction_number) || '—';
+    const ticketNo = formatReceiptNumber(row.invoice_number) || formatReceiptNumber(row.transaction_number) || '—';
     const filename = sanitizeFilename(`receipt-${ticketNo}`) + '.pdf';
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -1622,7 +1607,6 @@ router.get('/:id/pdf', async (req: AuthRequest, res: Response) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
 
-    // diagnostics
     res.setHeader('X-Receipt-Size', `${widthMm}x${heightMm}mm`);
     res.setHeader('X-Receipt-Margin', `${marginMm}mm`);
     res.setHeader('X-Receipt-Style', styleLabel);
@@ -1663,13 +1647,18 @@ router.get('/:id/pdf', async (req: AuthRequest, res: Response) => {
     const info = drawReceiptWeighingInfoBlock(doc as any, pageW, row, y);
     y = info.y;
 
+    const safeInset = getReceiptSafeInsetPt();
+    const contentLeft = doc.page.margins.left + safeInset;
+    const contentRight = pageW - doc.page.margins.right - safeInset;
+    const contentWidth = Math.max(0, contentRight - contentLeft);
+
     doc.y = y;
     doc.moveDown(1.0);
 
     // separator
     doc.save();
     doc.strokeColor('#111').lineWidth(0.7);
-    doc.moveTo(doc.page.margins.left, doc.y).lineTo(pageW - doc.page.margins.right, doc.y).stroke();
+    doc.moveTo(contentLeft, doc.y).lineTo(contentRight, doc.y).stroke();
     doc.restore();
 
     doc.moveDown(0.8);
@@ -1677,8 +1666,8 @@ router.get('/:id/pdf', async (req: AuthRequest, res: Response) => {
     // Net below separator
     if (Number.isFinite(info.net) && info.net >= 0) {
       doc.font('Helvetica').fontSize(10).fillColor('#111');
-      doc.text(`Net ${Math.round(info.net)} kg`, doc.page.margins.left, doc.y, {
-        width: pageW - doc.page.margins.left - doc.page.margins.right,
+      doc.text(`Net ${Math.round(info.net)} kg`, contentLeft, doc.y, {
+        width: contentWidth,
         align: 'left',
       });
       doc.moveDown(0.6);

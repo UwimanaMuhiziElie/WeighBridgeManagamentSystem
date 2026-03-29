@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Car, RefreshCcw, AlertTriangle, Search } from 'lucide-react';
-import { apiClient } from '@weighbridge/shared/lib/apiClient';
+import { apiClient } from '@weighbridge/shared';
 
 type ClientRow = {
   id: string;

@@ -7,7 +7,7 @@ WORKDIR /app
 COPY apps/backend/migrate.sh /app/migrate.sh
 RUN chmod +x /app/migrate.sh
 
-# Migrations will be mounted at /migrations in docker-compose OR copied in
+# Migrations will be mounted at /migrations in docker-compose or copied in
 # COPY apps/backend/migrations /migrations
 
 CMD ["/app/migrate.sh"]

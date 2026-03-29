@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, RefreshCcw, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { useSerialPort } from '@weighbridge/shared';
-import apiClient from '@weighbridge/shared/lib/apiClient';
+import { apiClient } from '@weighbridge/shared';
 
 type HealthState = {
   ok: boolean;
@@ -17,9 +17,9 @@ export default function MonitoringPage() {
   const {
     ports,
     isConnected,
-    currentWeight,     // ✅
-    lastRaw,           // ✅ (if your hook exposes it)
-    hasElectron,       // ✅
+    currentWeight,     // 
+    lastRaw,           //  (if your hook exposes it)
+    hasElectron,       // 
     error: serialError,
     isLoading,
     listPorts,

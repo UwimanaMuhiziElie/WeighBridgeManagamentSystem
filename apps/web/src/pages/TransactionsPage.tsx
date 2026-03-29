@@ -45,12 +45,12 @@ type TxRow = {
   license_plate?: string | null;
   vehicle_type?: string | null;
 
-  // ✅ pricing (no unit price shown in UI)
+  // pricing (no unit price shown in UI)
   amount_excl_tax?: number | string | null; // subtotal
   gst_amount?: number | string | null;      // GST value
   total_amount?: number | string | null;    // subtotal + GST
 
-  // ✅ proof of dumping (names may vary; we support multiple)
+  // proof of dumping (names may vary; we support multiple)
   proof_of_dumping?: string | null;
   dumping_proof?: string | null;
   dumping_proof_number?: string | null;
@@ -728,7 +728,7 @@ export default function TransactionsPage() {
                     <div className="text-gray-900">Material: {selected.material_type || '—'}</div>
                     <div className="text-gray-900">Reference: {selected.reference_number || '—'}</div>
 
-                    {/* ✅ Proof of dumping */}
+                    {/* Proof of dumping */}
                     <div className="text-gray-900">
                       Proof of dumping:{' '}
                       {pickFirst<string>(selected, ['proof_of_dumping', 'dumping_proof', 'dumping_proof_number']) || '—'}
@@ -737,7 +737,7 @@ export default function TransactionsPage() {
                     {selected.notes ? <div className="text-sm text-gray-700 mt-2">Notes: {selected.notes}</div> : null}
                   </div>
 
-                  {/* ✅ Pricing block (NO unit price shown) */}
+                  {/* Pricing block (NO unit price shown) */}
                   {canViewMoney && (
                     <div className="bg-white border border-gray-200 rounded-xl p-4">
                       <div className="text-sm text-gray-600 mb-2">Pricing</div>

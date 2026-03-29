@@ -569,7 +569,7 @@ export default function InvoiceDetailsPage() {
     }
   }
 
-  // ✅ Fallback: compute subtotal/tax/total from items if invoice fields not present
+  // Fallback: compute subtotal/tax/total from items if invoice fields not present
   const computedTotals = useMemo(() => {
     const subtotalFromItems = items.reduce((s, it) => {
       const qty = Math.max(1, num(it?.quantity, 1));

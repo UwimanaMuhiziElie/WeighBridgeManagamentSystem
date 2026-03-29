@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Scale, Plug, PlugZap, RefreshCcw, AlertTriangle, Beaker, ClipboardCheck, FileText } from 'lucide-react';
 import { useSerialPort, type SerialConfig, type SerialPortInfo } from '@weighbridge/shared';
-import apiClient from '@weighbridge/shared/lib/apiClient';
+import { apiClient } from '@weighbridge/shared';
 
 type Client = { id: string; company_name: string };
 
@@ -194,7 +194,7 @@ function blobToBase64Raw(blob: Blob): Promise<string> {
 export default function WeighingPage() {
   const manualAllowed = useMemo(() => isManualWeightAllowed(), []);
 
-  // ✅ TEMP: keep connect visible but disabled
+  // TEMP: keep connect visible but disabled
   const SERIAL_CONNECT_DISABLED = true;
 
   // ---- Serial via shared hook ----
@@ -238,10 +238,10 @@ export default function WeighingPage() {
     );
   });
 
-  // ✅ Manual entry
+  // Manual entry
   const [manualWeightText, setManualWeightText] = useState('');
 
-  // ✅ Single source of truth for what UI shows
+  // Single source of truth for what UI shows
   const [displayWeight, setDisplayWeight] = useState<number | null>(null);
 
   const [lastUpdateAt, setLastUpdateAt] = useState<string>('');
@@ -475,7 +475,7 @@ export default function WeighingPage() {
     clearLiveWeight();
   }
 
-  // ✅ Manual record
+  // Manual record
   async function recordWeight() {
     if (connected) {
       setUiError('Disconnect the serial port to use manual weight entry.');
@@ -487,7 +487,7 @@ export default function WeighingPage() {
     }
 
     const raw = manualWeightText;
-    setManualWeightText(''); // ✅ ALWAYS clear after click
+    setManualWeightText(''); // ALWAYS clear after click
 
     const n = parseFloat(raw.replace(/,/g, ''));
     if (!Number.isFinite(n)) {
@@ -551,7 +551,7 @@ export default function WeighingPage() {
 
     try {
       const stableWeight = stableInfo.avg!;
-      clearLiveWeight(); // ✅ clear/fresh AFTER capturing the weight
+      clearLiveWeight(); // clear/fresh AFTER capturing the weight
 
       const body = {
         client_id: !isWalkIn ? clientId : null,
@@ -613,7 +613,7 @@ export default function WeighingPage() {
 
     try {
       const stableWeight = stableInfo.avg!;
-      clearLiveWeight(); // ✅ clear/fresh AFTER capturing the weight
+      clearLiveWeight(); // clear/fresh AFTER capturing the weight
 
       const r = await apiClient.patch(`/api/transactions/${activeTx.id}/complete`, {
         second_weight: stableWeight,
@@ -650,79 +650,6 @@ export default function WeighingPage() {
     URL.revokeObjectURL(url);
   }
 
-  // async function printReceipt(invoiceId: string, invoiceNumber?: string) {
-  //   setUiError('');
-  //   setPrintingReceipt(true);
-
-  //   try {
-  //     const r = await apiClient.getBlob(`/api/invoices/${invoiceId}/pdf`);
-  //     const err = pickErrorMessage(r);
-  //     if (err) {
-  //       setUiError(err || 'Failed to fetch PDF');
-  //       return;
-  //     }
-
-  //     const blob = (r as any).data as Blob;
-  //     if (!(blob instanceof Blob)) {
-  //       setUiError('PDF fetch failed: invalid response');
-  //       return;
-  //     }
-
-  //     const printerApi = (window as any)?.electron?.printer;
-
-  //     // ✅ Electron one-click print
-  //     if (hasElectron && printerApi?.printPdf) {
-  //       const pdfBase64 = await blobToBase64Raw(blob);
-
-  //       const savedPrinterName = (storage?.getItem(PRINTER_KEY) || '').trim();
-
-  //       // ✅ Use the new payload call (option1 preload supports it)
-  //       let pr: any = null;
-  //       try {
-  //         pr = await printerApi.printPdf({
-  //           pdfBase64,
-  //           deviceName: savedPrinterName || undefined,
-  //           preferMunbyn: true,
-  //           silent: true,
-  //           jobName: invoiceNumber ? `Receipt ${invoiceNumber}` : 'Weighbridge Receipt',
-  //         });
-  //       } catch (e: any) {
-  //         pr = { success: false, error: e?.message || 'Print IPC failed' };
-  //       }
-
-  //       if (pr?.success) return;
-
-  //       // Retry without specifying printer name (lets main process pick default physical printer)
-  //       let pr2: any = null;
-  //       try {
-  //         pr2 = await printerApi.printPdf({
-  //           pdfBase64,
-  //           deviceName: undefined,
-  //           preferMunbyn: true,
-  //           silent: true,
-  //           jobName: invoiceNumber ? `Receipt ${invoiceNumber}` : 'Weighbridge Receipt',
-  //         });
-  //       } catch (e: any) {
-  //         pr2 = { success: false, error: e?.message || 'Print IPC failed' };
-  //       }
-
-  //       if (pr2?.success) return;
-
-  //       // If still fails, fallback to download so they can print manually
-  //       setUiError(pr?.error || pr2?.error || 'Printing failed (printer not installed / not reachable)');
-  //       await downloadInvoicePdfFallback(blob, invoiceNumber);
-  //       return;
-  //     }
-
-  //     // ✅ Non-Electron fallback: download like before
-  //     await downloadInvoicePdfFallback(blob, invoiceNumber);
-  //   } catch (e: any) {
-  //     setUiError(e?.message || 'Failed to print receipt');
-  //   } finally {
-  //     setPrintingReceipt(false);
-  //   }
-  // }
-
   async function printReceipt(invoiceId: string, invoiceNumber?: string) {
     setUiError('');
     setPrintingReceipt(true);
@@ -743,7 +670,7 @@ export default function WeighingPage() {
 
       const printerApi = (window as any)?.electron?.printer;
 
-      // ✅ Electron one-click print (MUNBYN preferred)
+      // Electron one-click print (MUNBYN preferred)
       if (hasElectron && printerApi?.printPdf) {
         const pdfBase64 = await blobToBase64Raw(blob);
 
@@ -785,7 +712,7 @@ export default function WeighingPage() {
     setNotes('');
     setWalkInName('');
 
-    clearLiveWeight(); // ✅ fresh/empty
+    clearLiveWeight(); // fresh/empty
   }
 
   function resetForNextVehicle() {
@@ -804,7 +731,7 @@ export default function WeighingPage() {
     setClientId('');
     setClientQuery('');
 
-    clearLiveWeight(); // ✅ fresh/empty
+    clearLiveWeight(); // fresh/empty
   }
 
   // ---- Effects ----
@@ -1066,7 +993,7 @@ export default function WeighingPage() {
           </div>
         </div>
 
-        {/* ✅ Combined row: Live weight (left) + Manual record (right) */}
+        {/* Combined row: Live weight (left) + Manual record (right) */}
         <div className="bg-white border border-gray-200 rounded-xl p-6 mb-6">
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6">
             {/* Left: Live weight */}

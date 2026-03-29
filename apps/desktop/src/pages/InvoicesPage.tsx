@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { FileText, RefreshCcw, AlertTriangle, Download, Search, CreditCard, X, Loader2, Ban } from 'lucide-react';
-import { apiClient } from '@weighbridge/shared/lib/apiClient';
+import { apiClient } from '@weighbridge/shared';
 
 type InvoiceRow = {
   id: string;

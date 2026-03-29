@@ -122,13 +122,13 @@ router.post('/monthly-cutoff', requireRole(['admin', 'manager']), async (req: Au
   try {
     await db.query('BEGIN');
 
-    // ✅ Prevent concurrent double-run for same customer + same period
+    // Prevent concurrent double-run for same customer + same period
     await advisoryLockMonthlyCutoff(
       db,
       `monthly-cutoff:${customer_id}:${period_start}:${period_end}:${cutoff_date}`
     );
 
-    // ✅ Idempotency check: if invoice already exists for this period, return it
+    // Idempotency check: if invoice already exists for this period, return it
     {
       const ex = await db.query(
         `
@@ -246,7 +246,7 @@ router.post('/monthly-cutoff', requireRole(['admin', 'manager']), async (req: Au
       return badRequest(res, 'No unbilled charges found for that period');
     }
 
-    // ✅ Collect exact locked charge IDs
+    // Collect exact locked charge IDs
     const chargeIds: string[] = (chargesRes.rows as any[])
       .map((r) => String(r.id || '').trim())
       .filter((id) => isUuid(id));
@@ -384,7 +384,7 @@ router.post('/monthly-cutoff', requireRole(['admin', 'manager']), async (req: Au
       );
     }
 
-    // ✅ IMPORTANT: mark ONLY the selected charges as billed
+    // IMPORTANT: mark ONLY the selected charges as billed
     const upd = await db.query(
       `
       UPDATE billing_charges

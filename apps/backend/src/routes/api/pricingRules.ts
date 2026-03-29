@@ -53,7 +53,7 @@ function todayISO() {
 }
 
 /**
- * ✅ UPDATED: allow non-weight units used by UI:
+ * UPDATED: allow non-weight units used by UI:
  * kg/ton/lb = weight-based
  * item/mattress/count = quantity-based
  */

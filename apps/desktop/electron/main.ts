@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import * as fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -27,6 +28,9 @@ let printerGetPrinters: any = null;
 
 // Thermal printable width from self-test: 72mm (default)
 const THERMAL_PRINTABLE_WIDTH_MM = Number(process.env.THERMAL_PRINTABLE_WIDTH_MM ?? 72);
+
+// Reasonable fallback page height for non-mac Electron print fallback
+const THERMAL_FALLBACK_HEIGHT_MM = Number(process.env.THERMAL_FALLBACK_HEIGHT_MM ?? 170);
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -75,19 +79,16 @@ async function loadSerialDeps() {
 
 /**
  * IMPORTANT: pdf-to-printer is CommonJS and often breaks under ESM bundling if imported the wrong way.
- * Using createRequire keeps it in CJS mode (prevents "__dirname is not defined").
+ * Using createRequire keeps it in CJS mode.
  */
 async function loadPrinterDeps() {
   if (printerPrint && printerGetPrinters) return;
 
-  // 1) Preferred: require() via createRequire (stable in packaged builds)
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const mod = require('pdf-to-printer');
     printerPrint = (mod as any).print ?? (mod as any).default?.print;
     printerGetPrinters = (mod as any).getPrinters ?? (mod as any).default?.getPrinters;
   } catch {
-    // 2) Fallback: dynamic import
     const mod = await import('pdf-to-printer');
     printerPrint = (mod as any).print ?? (mod as any).default?.print;
     printerGetPrinters = (mod as any).getPrinters ?? (mod as any).default?.getPrinters;
@@ -326,12 +327,23 @@ function isBlockedPrinter(name: string): boolean {
   const n = normalizePrinterName(name);
   if (!n) return true;
 
-  // Always block the obvious virtual ones
+  // obvious virtual/system printers
   if (n.includes('microsoft print to pdf')) return true;
   if (n.includes('xps')) return true;
   if (n.includes('onenote')) return true;
   if (n === 'fax' || n.includes(' fax')) return true;
   if (n.includes('hp smart universal printing')) return true;
+
+  // common virtual PDF printers / creators
+  if (n.includes('nitro pdf')) return true;
+  if (n.includes('adobe pdf')) return true;
+  if (n.includes('foxit pdf')) return true;
+  if (n.includes('cutepdf')) return true;
+  if (n.includes('bullzip')) return true;
+  if (n.includes('pdf24')) return true;
+  if (n.includes('pdf creator')) return true;
+  if (n.includes('pdfcreator')) return true;
+  if (n.includes('primopdf')) return true;
 
   // generic pdf/virtual
   if (n.includes('print to pdf')) return true;
@@ -354,7 +366,6 @@ function looksThermal(name: string): boolean {
   );
 }
 
-// Prefer thermal printers (MUNBYN, POS-80C, etc.)
 function scorePrinter(p: PrinterLike, preferThermal: boolean): number {
   const n = normalizePrinterName(p.name);
   if (!n || isBlockedPrinter(n)) return -9999;
@@ -512,7 +523,6 @@ async function printPdfViaHiddenWindow(payload: {
   deviceName?: string;
   silent?: boolean;
   jobName?: string;
-  // micron units (Electron expects microns if you set pageSize)
   pageSizeMicrons?: { width: number; height: number };
 }): Promise<{ success: boolean; error?: string }> {
   let win: BrowserWindow | null = null;
@@ -593,6 +603,58 @@ async function printPdfViaHiddenWindow(payload: {
       if (filePath) fs.unlinkSync(filePath);
     } catch {}
   }
+}
+
+/**
+ * macOS stable direct print path.
+ * Sends the already-generated PDF file directly to CUPS using `lp`,
+ * avoiding Chromium/Electron PDF viewer scaling issues.
+ */
+async function printPdfViaMacLp(payload: {
+  filePath: string;
+  deviceName: string;
+  jobName?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  return await new Promise((resolve) => {
+    const args: string[] = ['-d', payload.deviceName];
+
+    if (payload.jobName) {
+      args.push('-t', payload.jobName);
+    }
+
+    // keep original size as much as possible
+    args.push('-o', 'scaling=100');
+    args.push('-o', 'fit-to-page=false');
+    args.push('-o', 'page-left=0');
+    args.push('-o', 'page-right=0');
+    args.push('-o', 'page-top=0');
+    args.push('-o', 'page-bottom=0');
+
+    args.push(payload.filePath);
+
+    const child = spawn('lp', args);
+
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk ?? '');
+    });
+
+    child.on('error', (err) => {
+      resolve({ success: false, error: err instanceof Error ? err.message : 'lp failed' });
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ success: true });
+      } else {
+        resolve({
+          success: false,
+          error: stderr.trim() || `lp exited with code ${code}`,
+        });
+      }
+    });
+  });
 }
 
 // -------------------- SERIAL IPC --------------------
@@ -757,15 +819,10 @@ ipcMain.handle('printer:print-pdf', async (_event, arg1: any, arg2?: any) => {
           ? arg1.printerName.trim()
           : '';
 
-    // preferMunbyn here means "prefer thermal printer"
     const preferThermal = isStringCall ? true : arg1?.preferMunbyn !== false;
-
-    // silent default TRUE
     const silent = isStringCall ? true : arg1?.silent !== false;
-
     const jobName = !isStringCall && typeof arg1?.jobName === 'string' ? arg1.jobName : undefined;
 
-    // IMPORTANT: use 72mm by default (printer self-test printable width)
     const paperWidthMm =
       !isStringCall && Number.isFinite(Number(arg1?.paperWidthMm))
         ? Math.max(58, Math.min(80, Number(arg1.paperWidthMm)))
@@ -789,7 +846,42 @@ ipcMain.handle('printer:print-pdf', async (_event, arg1: any, arg2?: any) => {
       };
     }
 
-    // 1) Try pdf-to-printer FIRST (best for thermal on Windows)
+    // macOS: print directly via CUPS/lp to avoid Electron PDF viewer clipping/scaling issues
+    if (process.platform === 'darwin') {
+      let tmpPath = '';
+      try {
+        tmpPath = writeTempPdf(base64, jobName);
+
+        const macRes = await printPdfViaMacLp({
+          filePath: tmpPath,
+          deviceName,
+          jobName,
+        });
+
+        if (macRes.success) {
+          return {
+            success: true,
+            printerUsed: deviceName,
+            method: 'mac-lp',
+            paperWidthMm,
+          };
+        }
+
+        return {
+          success: false,
+          error: macRes.error || 'macOS print failed',
+          printerUsed: deviceName,
+          method: 'mac-lp',
+          paperWidthMm,
+        };
+      } finally {
+        try {
+          if (tmpPath) fs.unlinkSync(tmpPath);
+        } catch {}
+      }
+    }
+
+    // Windows / non-mac: try pdf-to-printer first
     try {
       await loadPrinterDeps();
 
@@ -797,9 +889,9 @@ ipcMain.handle('printer:print-pdf', async (_event, arg1: any, arg2?: any) => {
       try {
         tmpPath = writeTempPdf(base64, jobName);
 
-        // If the PDF is already generated at 72mm, "noscale" is the correct choice.
-        // Still, drivers vary: we fallback to "fit" then "shrink".
-        const scaleAttempts: Array<'noscale' | 'fit' | 'shrink'> = preferThermal ? ['noscale', 'fit', 'shrink'] : ['fit', 'shrink', 'noscale'];
+        const scaleAttempts: Array<'noscale' | 'fit' | 'shrink'> = preferThermal
+          ? ['noscale', 'fit', 'shrink']
+          : ['fit', 'shrink', 'noscale'];
 
         let lastErr: any = null;
         for (const scale of scaleAttempts) {
@@ -822,15 +914,13 @@ ipcMain.handle('printer:print-pdf', async (_event, arg1: any, arg2?: any) => {
         } catch {}
       }
     } catch (_e1: any) {
-      // fall back below
+      // fallback below
     }
 
-    // 2) Fallback: Electron hidden-window print
-    // Set an explicit pageSize (microns) to encourage thermal sizing when drivers are weird
+    // Non-mac fallback: hidden Electron print with explicit thermal page size
     const pageSizeMicrons = {
       width: Math.round(paperWidthMm * 1000),
-      // long page; receipt height comes from PDF anyway but some drivers behave better with a "reasonable" height
-      height: Math.round(220 * 1000),
+      height: Math.round(THERMAL_FALLBACK_HEIGHT_MM * 1000),
     };
 
     const r2 = await printPdfViaHiddenWindow({
@@ -841,8 +931,22 @@ ipcMain.handle('printer:print-pdf', async (_event, arg1: any, arg2?: any) => {
       pageSizeMicrons,
     });
 
-    if (r2.success) return { success: true, printerUsed: deviceName, method: 'electron', paperWidthMm };
-    return { success: false, error: r2.error || 'Print failed', printerUsed: deviceName, method: 'electron', paperWidthMm };
+    if (r2.success) {
+      return {
+        success: true,
+        printerUsed: deviceName,
+        method: 'electron',
+        paperWidthMm,
+      };
+    }
+
+    return {
+      success: false,
+      error: r2.error || 'Print failed',
+      printerUsed: deviceName,
+      method: 'electron',
+      paperWidthMm,
+    };
   } catch (e: any) {
     return { success: false, error: e instanceof Error ? e.message : String(e ?? 'Print failed') };
   }

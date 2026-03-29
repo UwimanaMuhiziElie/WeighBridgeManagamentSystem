@@ -79,7 +79,7 @@ export function BranchProvider({ children }: { children: ReactNode }) {
     return storage?.getItem(BRANCH_KEY) || '';
   });
 
-  // ✅ prevent stale branchId closure inside async loaders
+  // prevent stale branchId closure inside async loaders
   const branchIdRef = useRef<string>(branchId);
   useEffect(() => {
     branchIdRef.current = branchId;
@@ -87,7 +87,7 @@ export function BranchProvider({ children }: { children: ReactNode }) {
 
   const prevRoleRef = useRef<Role>(role);
 
-  // ✅ Reset state on logout (avoid stale admin branch list in UI)
+  // Reset state on logout (avoid stale admin branch list in UI)
   useEffect(() => {
     if (user) return;
     setBranches([]);
@@ -125,7 +125,7 @@ export function BranchProvider({ children }: { children: ReactNode }) {
 
     setBranchIdState(next);
 
-    // ✅ do not store empty string; remove key instead
+    // do not store empty string; remove key instead
     if (storage) {
       if (!next) storage.removeItem(BRANCH_KEY);
       else storage.setItem(BRANCH_KEY, next);

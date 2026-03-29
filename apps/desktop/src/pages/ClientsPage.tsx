@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Users, Search, RefreshCcw, AlertTriangle, Plus } from 'lucide-react';
-import { apiClient } from '@weighbridge/shared/lib/apiClient';
+import { apiClient } from '@weighbridge/shared';
 import { useAuth } from '../contexts/AuthContext';
 
 type Role = 'operator' | 'admin' | 'manager';

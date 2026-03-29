@@ -44,7 +44,7 @@ export default function DashboardLayout() {
     () => [
       { id: 'dashboard', path: '/', label: 'Dashboard', icon: LayoutDashboard, roles: ['operator', 'admin', 'manager'] },
 
-      // ✅ Admin/Manager monitoring pages (web portal)
+      // Admin/Manager monitoring pages (web portal)
       { id: 'transactions', path: '/transactions', label: 'Transactions', icon: Scale, roles: ['admin', 'manager'] },
       { id: 'invoices', path: '/invoices', label: 'Invoices', icon: FileText, roles: ['admin', 'manager'] },
 

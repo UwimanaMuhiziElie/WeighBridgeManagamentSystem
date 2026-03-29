@@ -27,7 +27,7 @@ export default function Dashboard() {
   const [currentPage, setCurrentPage] = useState<Page>('weighing');
   const { user, signOut } = useAuth();
 
-  // ✅ Allow any page to request navigation without react-router:
+  // Allow any page to request navigation without react-router:
   // window.dispatchEvent(new CustomEvent('wb:navigate', { detail: { page: 'weighing' } }))
   useEffect(() => {
     const handler = (e: Event) => {

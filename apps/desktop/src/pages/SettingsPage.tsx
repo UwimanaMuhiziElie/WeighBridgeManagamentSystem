@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Settings as SettingsIcon, RefreshCw, AlertCircle, CheckCircle, Play } from 'lucide-react';
 import { useSerialPort, type SerialConfig } from '@weighbridge/shared';
+import ApiServerSettings from '../components/ApiServerSettings'; 
 
 const STORAGE_KEY = 'serialConfig';
 
@@ -34,7 +35,7 @@ function safeParseSerialConfig(raw: string | null): SerialConfig | null {
       stopBits: v?.stopBits === 2 ? 2 : 1,
       parity: v?.parity === 'even' ? 'even' : v?.parity === 'odd' ? 'odd' : 'none',
 
-      // ✅ keep poll fields if present
+      // keep poll fields if present
       mode: v?.mode === 'stream' ? 'stream' : 'poll',
       requestCommand: typeof v?.requestCommand === 'string' ? v.requestCommand : 'P\r\n',
       pollIntervalMs: Number.isFinite(Number(v?.pollIntervalMs)) ? Math.max(200, Number(v.pollIntervalMs)) : 1000,
@@ -62,7 +63,7 @@ function clipRaw(raw: string, max = 700) {
   return s.slice(0, max) + '…';
 }
 
-// ✅ Windows COM10+ normalization (use for opening, NOT for dropdown storage)
+// Windows COM10+ normalization (use for opening, NOT for dropdown storage)
 function normalizeComPath(pathStr: string): string {
   const p = String(pathStr || '').trim();
   const m = p.match(/^COM(\d+)$/i);
@@ -72,7 +73,7 @@ function normalizeComPath(pathStr: string): string {
   return p;
 }
 
-// ✅ Show a safe “escaped” view in input (so real CR/LF don’t break the input box)
+// Show a safe “escaped” view in input (so real CR/LF don’t break the input box)
 function toEscapedView(s: string): string {
   return String(s ?? '')
     .replace(/\\/g, '\\\\')
@@ -81,7 +82,7 @@ function toEscapedView(s: string): string {
     .replace(/\t/g, '\\t');
 }
 
-// ✅ Convert user-typed escapes to real control chars before sending to serial
+// Convert user-typed escapes to real control chars before sending to serial
 function fromEscapedView(s: string): string {
   return String(s ?? '')
     .replace(/\\\\/g, '\\') // unescape backslashes first
@@ -107,7 +108,7 @@ export default function SettingsPage() {
   const disconnect = serial?.disconnect;
   const simulateWeight = serial?.simulateWeight;
 
-  // ✅ new (from updated hook)
+  // new (from updated hook)
   const testRead = serial?.testRead; // (opts) => { success, raw, weight }
   const lastRaw = serial?.lastRaw as string | null | undefined;
   const currentWeight = serial?.currentWeight as number | null | undefined;
@@ -137,7 +138,7 @@ export default function SettingsPage() {
     );
   });
 
-  // ✅ request command input uses escaped text
+  // request command input uses escaped text
   const [requestCmdText, setRequestCmdText] = useState(() => toEscapedView(config.requestCommand ?? 'P\r\n'));
   useEffect(() => {
     // keep in sync when config loads/changes externally
@@ -146,7 +147,7 @@ export default function SettingsPage() {
 
   const [simulatorWeight, setSimulatorWeight] = useState('1000');
 
-  // ✅ Test Read state
+  // Test Read state
   const [testLoading, setTestLoading] = useState(false);
   const [testAt, setTestAt] = useState<string>('');
   const [testRaw, setTestRaw] = useState<string>('');
@@ -168,7 +169,7 @@ export default function SettingsPage() {
 
     const requestCommandReal = fromEscapedView(requestCmdText || 'P\\r\\n');
 
-    // ✅ connect using normalized path (COM10+), but store raw path for dropdown matching
+    // connect using normalized path (COM10+), but store raw path for dropdown matching
     const cfgForConnect: SerialConfig = {
       ...config,
       path: normalizeComPath(config.path),
@@ -188,7 +189,7 @@ export default function SettingsPage() {
     if (ok) {
       const cfgForStorage: SerialConfig = {
         ...cfgForConnect,
-        path: config.path, // ✅ store raw selection
+        path: config.path, // store raw selection
       };
       storage?.setItem(STORAGE_KEY, JSON.stringify(cfgForStorage));
     }
@@ -254,7 +255,7 @@ export default function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ default selection (still compares against raw port.path)
+  // default selection (still compares against raw port.path)
   useEffect(() => {
     if (isConnected) return;
     if (!ports?.length) return;
@@ -276,6 +277,9 @@ export default function SettingsPage() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-lg shadow p-6">
+          <ApiServerSettings />
+        </div>
         {/* Serial config */}
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center gap-2 mb-6">

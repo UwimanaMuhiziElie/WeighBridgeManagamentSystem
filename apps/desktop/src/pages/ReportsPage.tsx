@@ -1,7 +1,7 @@
 // apps/desktop/src/pages/ReportsPage.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BarChart3, RefreshCcw, AlertTriangle, Download, FileText } from 'lucide-react';
-import { apiClient } from '@weighbridge/shared/lib/apiClient';
+import { apiClient } from '@weighbridge/shared';
 import ReportFilters, { ReportFiltersValue } from '../components/ReportFilters';
 
 type TransactionRow = {
@@ -13,7 +13,7 @@ type TransactionRow = {
   company_name?: string;
   license_plate?: string;
 
-  // ✅ best-effort: backend may already send this
+  // best-effort: backend may already send this
   client_id?: string;
 };
 
@@ -140,7 +140,7 @@ export default function ReportsPage() {
       const st = String(t.status || '').toLowerCase();
       const statusOk = filters.status ? st === filters.status : true;
 
-      // ✅ client filter: works if backend includes client_id in rows
+      // client filter: works if backend includes client_id in rows
       const clientOk = filters.client_id
         ? String((t as any).client_id || '') === filters.client_id
         : true;

@@ -1,7 +1,7 @@
 // apps/desktop/src/contexts/AuthContext.tsx
 
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { apiClient } from '@weighbridge/shared/lib/apiClient';
+import { apiClient } from '@weighbridge/shared';
 import type { UserProfile } from '@weighbridge/shared';
 
 type Role = 'operator' | 'admin' | 'manager';
@@ -114,7 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // ✅ prevents "checkAuth" finishing after "signIn" and wiping the new session
+  // prevents "checkAuth" finishing after "signIn" and wiping the new session
   const opRef = useRef(0);
 
   useEffect(() => {
@@ -217,7 +217,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if ((response as any)?.error) return { error: String((response as any).error) };
 
-      // ✅ ensure token exists even if backend returns it in a weird place
+      // ensure token exists even if backend returns it in a weird place
       if (!apiClient.getToken?.()) {
         const tok = extractToken(response);
         if (tok) apiClient.setToken?.(tok);

@@ -1,8 +1,9 @@
 // packages/shared/lib/apiClient.ts
 
-const DEFAULT_API_URL = 'http://localhost:3001';
-const TOKEN_KEY = 'auth_token';
+//come back to this keys
+const TOKEN_KEY = 'auth_token'; 
 const BASE_URL_KEY = 'api_base_url';
+const BASE_URL_USER_SET_KEY = 'api_base_url_user_set';
 
 function safeLocalStorage() {
   try {
@@ -13,25 +14,97 @@ function safeLocalStorage() {
 
 function normalizeBaseUrl(url: string): string {
   const s = String(url || '').trim();
-  if (!s) return DEFAULT_API_URL;
+  if (!s) return '';
   return s.endsWith('/') ? s.slice(0, -1) : s;
 }
 
-function getRuntimeBaseUrl(): string {
-  const storage = safeLocalStorage();
-  const stored = storage?.getItem(BASE_URL_KEY);
-  if (stored) return normalizeBaseUrl(stored);
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = (u.hostname || '').toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    // If it isn't a valid URL, treat as unsafe and NOT loopback
+    return false;
+  }
+}
 
+function getViteApiUrl(): string {
   try {
     const viteUrl = (import.meta as any)?.env?.VITE_API_URL;
-    if (viteUrl) return normalizeBaseUrl(String(viteUrl));
+    return viteUrl ? normalizeBaseUrl(String(viteUrl)) : '';
+  } catch {
+    return '';
+  }
+}
+
+function getNodeApiUrl(): string {
+  try {
+    const env = typeof process !== 'undefined' ? (process as any)?.env : null;
+    const nodeUrl = env?.API_URL || env?.API_BASE_URL || env?.VITE_API_URL;
+    return nodeUrl ? normalizeBaseUrl(String(nodeUrl)) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Base URL strategy (Desktop):
+ * 1) If user explicitly set api_base_url (api_base_url_user_set=true), use it.
+ * 2) Otherwise, prefer Vite env VITE_API_URL (production default).
+ * 3) Otherwise, Node/Electron env.
+ * 4) Otherwise, browser-derived (same host :3001) when hostname exists.
+ * 5) Fallback localhost:3001.
+ *
+ * Extra safety(later on, not now):
+ * - If stored api_base_url is loopback (localhost) but VITE_API_URL is non-loopback,
+ *   auto-migrate to VITE_API_URL so login never gets stuck.
+ */
+function getRuntimeBaseUrl(): string {
+  const storage = safeLocalStorage();
+
+  const stored = storage?.getItem(BASE_URL_KEY) ?? '';
+  const storedNorm = stored ? normalizeBaseUrl(stored) : '';
+
+  const userSet = (storage?.getItem(BASE_URL_USER_SET_KEY) ?? '') === 'true';
+
+  const viteUrl = getViteApiUrl();
+  const nodeUrl = getNodeApiUrl();
+
+  // 1) If user explicitly set it, always respect it
+  if (userSet && storedNorm) return storedNorm;
+
+  // Auto-fix legacy/stale localhost override if we have a real env URL
+  if (storedNorm && isLoopbackUrl(storedNorm)) {
+    const preferred = viteUrl && !isLoopbackUrl(viteUrl) ? viteUrl : nodeUrl && !isLoopbackUrl(nodeUrl) ? nodeUrl : '';
+    if (preferred) {
+      try {
+        storage?.setItem(BASE_URL_KEY, preferred);
+        storage?.setItem(BASE_URL_USER_SET_KEY, 'false');
+      } catch {}
+      return preferred;
+    }
+  }
+
+  // 2) Prefer Vite env (best for packaged desktop/web)
+  if (viteUrl) return viteUrl;
+
+  // 3) Node/Electron env
+  if (nodeUrl) return nodeUrl;
+
+  // 4) Browser-derived: same host, port 3001 (only when hostname exists)
+  try {
+    if (typeof window !== 'undefined' && window.location) {
+      const { protocol, hostname } = window.location;
+      if (hostname) {
+        if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:3001';
+        return `${protocol}//${hostname}:3001`;
+      }
+    }
   } catch {}
 
-  const env = typeof process !== 'undefined' ? (process as any)?.env : null;
-  const nodeUrl = env?.API_URL || env?.VITE_API_URL;
-  if (nodeUrl) return normalizeBaseUrl(String(nodeUrl));
-
-  return normalizeBaseUrl(DEFAULT_API_URL);
+  // 5) Final fallback
+  return 'http://localhost:3001';
 }
 
 function getTimeoutMs(): number {
@@ -70,7 +143,6 @@ function extractToken(resp: any): string | null {
     resp?.data?.auth?.token,
     resp?.auth?.token,
   ];
-
   for (const c of candidates) {
     if (typeof c === 'string' && c.trim()) return c.trim();
   }
@@ -80,11 +152,9 @@ function extractToken(resp: any): string | null {
 function isFormDataBody(body: any): boolean {
   return typeof FormData !== 'undefined' && body instanceof FormData;
 }
-
 function isUrlParamsBody(body: any): boolean {
   return typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams;
 }
-
 function prepareBody(body: any): BodyInit | undefined {
   if (body === undefined || body === null) return undefined;
   if (typeof body === 'string') return body;
@@ -97,6 +167,7 @@ function prepareBody(body: any): BodyInit | undefined {
 
 class ApiClient {
   private token: string | null = null;
+
   constructor() {
     const storage = safeLocalStorage();
     this.token = storage?.getItem(TOKEN_KEY) ?? null;
@@ -114,11 +185,22 @@ class ApiClient {
     return this.token;
   }
 
+  // IMPORTANT: mark as user-set so it persists
   setBaseUrl(url: string | null) {
     const storage = safeLocalStorage();
     if (!storage) return;
-    if (!url) storage.removeItem(BASE_URL_KEY);
-    else storage.setItem(BASE_URL_KEY, normalizeBaseUrl(url));
+
+    if (!url) {
+      storage.removeItem(BASE_URL_KEY);
+      storage.removeItem(BASE_URL_USER_SET_KEY);
+      return;
+    }
+
+    const n = normalizeBaseUrl(url);
+    if (!n) return;
+
+    storage.setItem(BASE_URL_KEY, n);
+    storage.setItem(BASE_URL_USER_SET_KEY, 'true');
   }
 
   getBaseUrl(): string {
@@ -132,7 +214,6 @@ class ApiClient {
 
   private buildHeaders(options: RequestInit): Headers {
     const h = new Headers(options.headers || undefined);
-
     if (!h.has('Accept')) h.set('Accept', 'application/json');
 
     const body = options.body;
@@ -147,7 +228,6 @@ class ApiClient {
     if (this.token && !h.has('Authorization')) {
       h.set('Authorization', `Bearer ${this.token}`);
     }
-
     return h;
   }
 
@@ -155,15 +235,10 @@ class ApiClient {
     if (response.status === 204) return null;
 
     const contentType = response.headers.get('content-type') || '';
-
-    if (contentType.includes('application/json')) {
-      return response.json().catch(() => null);
-    }
-
+    if (contentType.includes('application/json')) return response.json().catch(() => null);
     if (contentType.includes('application/pdf') || contentType.includes('application/octet-stream')) {
       return response.blob().catch(() => null);
     }
-
     return response.text().catch(() => null);
   }
 
@@ -190,17 +265,10 @@ class ApiClient {
 
         if (response.status === 401) this.setToken(null);
 
-        return {
-          success: false,
-          error: String(msg),
-          statusCode: response.status,
-        };
+        return { success: false, error: String(msg), statusCode: response.status };
       }
 
-      if (
-        isPlainObject(payload) &&
-        ('data' in payload || 'success' in payload || 'error' in payload || 'message' in payload)
-      ) {
+      if (isPlainObject(payload) && ('data' in payload || 'success' in payload || 'error' in payload || 'message' in payload)) {
         const envResp = payload as ApiResponse<T>;
         if (typeof envResp.statusCode !== 'number') envResp.statusCode = response.status;
         return envResp;
@@ -208,9 +276,7 @@ class ApiClient {
 
       return { success: true, data: payload as T, statusCode: response.status };
     } catch (error: any) {
-      if (error?.name === 'AbortError') {
-        return { success: false, error: `Request timed out after ${timeoutMs}ms`, statusCode: 0 };
-      }
+      if (error?.name === 'AbortError') return { success: false, error: `Request timed out after ${timeoutMs}ms`, statusCode: 0 };
       return { success: false, error: error?.message || 'Network error', statusCode: 0 };
     } finally {
       clearTimeout(timer);
@@ -220,25 +286,8 @@ class ApiClient {
   async get<T = any>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, { ...options, method: 'GET' });
   }
-
   async post<T = any>(endpoint: string, body?: any, options: RequestInit = {}): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, { ...options, method: 'POST', body: prepareBody(body) });
-  }
-
-  async put<T = any>(endpoint: string, body?: any, options: RequestInit = {}): Promise<ApiResponse<T>> {
-    return this.request<T>(endpoint, { ...options, method: 'PUT', body: prepareBody(body) });
-  }
-
-  async patch<T = any>(endpoint: string, body?: any, options: RequestInit = {}): Promise<ApiResponse<T>> {
-    return this.request<T>(endpoint, { ...options, method: 'PATCH', body: prepareBody(body) });
-  }
-
-  async delete<T = any>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
-    return this.request<T>(endpoint, { ...options, method: 'DELETE' });
-  }
-
-  async getBlob(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<Blob>> {
-    return this.request<Blob>(endpoint, { ...options, method: 'GET' });
   }
 
   private async postAuthFallback<T = any>(pathA: string, pathB: string, body: any): Promise<ApiResponse<T>> {
@@ -246,7 +295,6 @@ class ApiClient {
     if (a?.statusCode === 404) return this.post<T>(pathB, body);
     return a;
   }
-
   private async getAuthFallback<T = any>(pathA: string, pathB: string): Promise<ApiResponse<T>> {
     const a = await this.get<T>(pathA);
     if (a?.statusCode === 404) return this.get<T>(pathB);
@@ -255,13 +303,6 @@ class ApiClient {
 
   async login(email: string, password: string): Promise<ApiResponse<{ user: any; token?: string }>> {
     const response = await this.postAuthFallback('/auth/login', '/api/auth/login', { email, password });
-    const tok = extractToken(response);
-    if (tok) this.setToken(tok);
-    return response as ApiResponse<{ user: any; token?: string }>;
-  }
-
-  async signup(email: string, password: string, fullName: string): Promise<ApiResponse<{ user: any; token?: string }>> {
-    const response = await this.postAuthFallback('/auth/signup', '/api/auth/signup', { email, password, fullName });
     const tok = extractToken(response);
     if (tok) this.setToken(tok);
     return response as ApiResponse<{ user: any; token?: string }>;
@@ -279,5 +320,52 @@ class ApiClient {
 const GLOBAL_KEY = '__WEIGHBRIDGE_API_CLIENT__';
 const g = globalThis as any;
 
-export const apiClient: ApiClient = g[GLOBAL_KEY] ?? (g[GLOBAL_KEY] = new ApiClient());
+function upgradeClient(c: any) {
+  if (!c || typeof c !== 'object') return null;
+
+  // If request exists, we can polyfill missing verbs safely
+  if (typeof c.request === 'function') {
+    if (typeof c.get !== 'function') {
+      c.get = (endpoint: string, options: RequestInit = {}) =>
+        c.request(endpoint, { ...options, method: 'GET' });
+    }
+
+    if (typeof c.post !== 'function') {
+      c.post = (endpoint: string, body?: any, options: RequestInit = {}) =>
+        c.request(endpoint, { ...options, method: 'POST', body: prepareBody(body) });
+    }
+
+    if (typeof c.put !== 'function') {
+      c.put = (endpoint: string, body?: any, options: RequestInit = {}) =>
+        c.request(endpoint, { ...options, method: 'PUT', body: prepareBody(body) });
+    }
+
+    // This is the one breaking Scale-Otu
+    if (typeof c.patch !== 'function') {
+      c.patch = (endpoint: string, body?: any, options: RequestInit = {}) =>
+        c.request(endpoint, { ...options, method: 'PATCH', body: prepareBody(body) });
+    }
+
+    if (typeof c.delete !== 'function') {
+      c.delete = (endpoint: string, options: RequestInit = {}) =>
+        c.request(endpoint, { ...options, method: 'DELETE' });
+    }
+
+    if (typeof c.getBlob !== 'function') {
+      c.getBlob = (endpoint: string, options: RequestInit = {}) =>
+        c.request(endpoint, { ...options, method: 'GET' });
+    }
+  }
+
+  return c;
+}
+
+const existing = upgradeClient(g[GLOBAL_KEY]);
+const client: ApiClient = (existing as ApiClient) ?? new ApiClient();
+
+// Always ensure the stored client is upgraded
+upgradeClient(client);
+g[GLOBAL_KEY] = client;
+
+export const apiClient: ApiClient = client;
 export default apiClient;

@@ -34,21 +34,7 @@ cd weighbridge-monorepo
 npm install
 ```
 
-### 2. Set Up Supabase (Self-Hosted)
-
-See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed Supabase setup instructions.
-
-Quick setup:
-```bash
-# Start Supabase locally
-npx supabase init
-npx supabase start
-
-# Apply migrations
-npx supabase db reset
-```
-
-### 3. Configure Environment
+### 2. Configure Environment
 
 Create `.env` file:
 ```

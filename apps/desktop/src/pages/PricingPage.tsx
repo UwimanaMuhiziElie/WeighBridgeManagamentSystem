@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { DollarSign, RefreshCcw, AlertTriangle, Search } from 'lucide-react';
-import { apiClient } from '@weighbridge/shared/lib/apiClient';
+import { apiClient } from '@weighbridge/shared';
 
 type ClientLite = { id: string; company_name: string };
 
@@ -18,7 +18,7 @@ type PricingRule = {
   effective_from?: string | null;
   effective_until?: string | null;
 
-  // ✅ needed for negotiated rules filtering
+  // needed for negotiated rules filtering
   client_id?: string | null;
 };
 
@@ -135,7 +135,7 @@ export default function PricingPage() {
   const filtered = useMemo(() => {
     let base = rows;
 
-    // ✅ client filtering
+    // client filtering
     if (selectedClient?.id) {
       base = base.filter((r) => {
         const isStandard = !r.client_id;
@@ -144,7 +144,7 @@ export default function PricingPage() {
       });
     }
 
-    // ✅ text search
+    // text search
     const term = q.trim().toLowerCase();
     if (!term) return base;
 

@@ -73,8 +73,8 @@ function parseNumberStrict(v: unknown): number | null {
 
 /**
  * GET /api/branches
- * ✅ includes gst_enabled / gst_rate when migration 011 exists
- * ✅ fallback to old select if columns don't exist yet (42703)
+ *  includes gst_enabled / gst_rate when migration 011 exists
+ *  fallback to old select if columns don't exist yet (42703)
  */
 router.get('/', async (_req: Request, res: Response) => {
   try {
@@ -152,7 +152,7 @@ router.post('/', async (req: Request, res: Response) => {
 
 /**
  * PUT /api/branches/:id
- * ✅ patched:
+ *  patched:
  * - prevents accidental wiping of optional fields if client omits them
  * - empty strings clear to NULL
  */
@@ -255,7 +255,7 @@ router.patch('/:id/status', async (req: Request, res: Response) => {
 
 /**
  * PATCH /api/branches/:id/gst
- * ✅ Admin-only: toggle GST and set rate (%)
+ *  Admin-only: toggle GST and set rate (%)
  *
  * Body examples:
  *  { "gst_enabled": true, "gst_rate": 18 }

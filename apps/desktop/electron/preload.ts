@@ -49,7 +49,7 @@ async function safeInvoke<T extends object>(channel: string, ...args: any[]): Ap
   }
 }
 
-// ✅ Printer payload type (supports old + new call styles)
+// Printer payload type (supports old + new call styles)
 export type PrintPdfPayload = {
   pdfBase64?: string; // new style
   base64?: string; // old style
@@ -108,7 +108,7 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
 
-  // ✅ Printer bridge (backward + forward compatible)
+  // Printer bridge (backward + forward compatible)
   printer: {
     listPrinters: (): ApiResult<{ printers?: Array<{ name: string; displayName?: string; isDefault?: boolean }> }> =>
       safeInvoke('printer:list'),

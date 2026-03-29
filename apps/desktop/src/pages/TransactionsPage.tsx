@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { List, RefreshCcw, AlertTriangle, Search, Play } from 'lucide-react';
-import { apiClient } from '@weighbridge/shared/lib/apiClient';
+import { apiClient } from '@weighbridge/shared';
 
 type TransactionRow = {
   id: string;
@@ -194,7 +194,7 @@ export default function TransactionsPage() {
       asStringOrEmpty((t as any).truck_side_number ?? (t as any).truckSideNumber);
 
     // If list row is missing important info, fetch full details by id
-    // ✅ NOTE: vehicle_id is OPTIONAL, so we only fetch if we lack BOTH client_id and walk-in name,
+    // N>B: vehicle_id is OPTIONAL, so we only fetch if we lack BOTH client_id and walk-in name,
     // or we want to enrich payload (assigned ids etc).
     if ((!clientId && !walkInName) || assignedTruckId === null) {
       try {
@@ -223,7 +223,7 @@ export default function TransactionsPage() {
       }
     }
 
-    // ✅ Correct resume rule:
+    // Correct resume rule:
     // - Must be either client transaction (client_id exists)
     // - OR walk-in (walk_in_name exists)
     // - vehicle_id may legitimately be null
@@ -241,7 +241,7 @@ export default function TransactionsPage() {
 
       // WeighingPage expects these snake_case keys
       client_id: clientId || null,
-      vehicle_id: vehicleId || null, // ✅ optional
+      vehicle_id: vehicleId || null, // optional
 
       walk_in_name: (walkInName || '').trim(),
       assigned_truck_id: assignedTruckId,
@@ -259,7 +259,7 @@ export default function TransactionsPage() {
       `Saved for resume: ${payload.transaction_number || payload.id}. Switching to Weighing to record the SECOND weight...`
     );
 
-    // ✅ state-based navigation
+    // state-based navigation
     try {
       window.dispatchEvent(new CustomEvent('wb:navigate', { detail: { page: 'weighing' } }));
     } catch {

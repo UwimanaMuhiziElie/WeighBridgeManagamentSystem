@@ -123,7 +123,7 @@ router.get('/clients', async (req: AuthRequest, res: Response) => {
 
     if (from > to) return badRequest(res, 'from must be <= to');
 
-    // ✅ safety: prevent very large scans
+    // safety: prevent very large scans
     const span = daysBetween(from, to);
     if (span === null) return badRequest(res, 'Invalid date range');
     if (span > 366) return badRequest(res, 'Date range too large (max 366 days)');
@@ -238,7 +238,7 @@ router.get('/clients', async (req: AuthRequest, res: Response) => {
     const dateCol = invDueCol ? `COALESCE(i.${qIdent(invDueCol)}, i.created_at)` : `i.created_at`;
     const agingValueExpr = invAmountCol ? `COALESCE(SUM(i.${qIdent(invAmountCol)}),0)::numeric` : `NULL::numeric`;
 
-    // unpaid aging (FIXED)  ✅ includes joinTx as you requested
+    // unpaid aging (FIXED)  includes joinTx as you requested
     // NOTE: We compute bucket_order safely and order by it (no ungrouped-column error)
     const aging = await query(
       `SELECT

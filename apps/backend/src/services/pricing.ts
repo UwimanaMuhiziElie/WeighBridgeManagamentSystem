@@ -24,7 +24,7 @@ function kgToUnit(netKg: number, unit: 'kg' | 'ton' | 'lb') {
   return netKg * 2.2046226218;
 }
 
-// ✅ Use Kigali date to avoid UTC off-by-one
+// Use Kigali date to avoid UTC off-by-one
 function isoDateInKigali(d: Date) {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Africa/Kigali',

@@ -76,6 +76,9 @@ const ALLOWED_STATUS_FILTERS = new Set(['pending', 'in_progress', 'completed', '
 // Team lead requirement: always 5% GST
 const GST_RATE = 5;
 
+// advisory lock namespace for yearly invoice number generation
+const INVOICE_NO_LOCK_NS = 91001;
+
 // ----- branch scoping helpers -----
 async function resolveUserBranchId(userId: string): Promise<string | null> {
   try {
@@ -369,12 +372,33 @@ function genTxNumber(branchCode: string) {
   return `TXN-${branchCode}-${y}${m}${day}-${rand}`;
 }
 
-function genInvoiceNumber(branchCode: string) {
-  const d = new Date();
-  const yy = String(d.getFullYear()).slice(-2);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const rand = Math.random().toString(36).slice(2, 7).toUpperCase();
-  return `INV-${branchCode}-${yy}${mm}-${rand}`;
+/**
+ * Yearly sequential receipt / invoice number:
+ *   2026-00001
+ *   2026-00002
+ *   ...
+ *   2027-00001
+ */
+async function genInvoiceNumber(db: { query: (q: string, p?: any[]) => Promise<any> }) {
+  const year = new Date().getFullYear();
+
+  // transaction-scoped advisory lock so concurrent requests do not generate duplicates
+  await db.query(`SELECT pg_advisory_xact_lock($1, $2)`, [INVOICE_NO_LOCK_NS, year]);
+
+  const r = await db.query(
+    `
+    SELECT COALESCE(MAX(RIGHT(invoice_number, 5)::int), 0) AS last_seq
+    FROM invoices
+    WHERE invoice_number LIKE $1
+      AND invoice_number ~ $2
+    `,
+    [`${year}-%`, `^${year}-[0-9]{5}$`]
+  );
+
+  const lastSeq = Number(r.rows?.[0]?.last_seq ?? 0);
+  const nextSeq = lastSeq + 1;
+
+  return `${year}-${String(nextSeq).padStart(5, '0')}`;
 }
 
 function genPaymentNumber(branchCode: string) {
@@ -414,7 +438,7 @@ router.get('/', requireRole(['operator', 'admin', 'manager']), async (req: AuthR
   const qRaw = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   const q = qRaw ? `%${escapeLike(qRaw)}%` : null;
 
-  // ✅ NEW: server-side client filter
+  // server-side client filter
   const clientIdRaw = typeof req.query.client_id === 'string' ? req.query.client_id.trim() : '';
   const client_id = clientIdRaw ? clientIdRaw : null;
   if (client_id && !isUuid(client_id)) return badRequest(res, 'client_id must be a UUID');
@@ -442,7 +466,6 @@ router.get('/', requireRole(['operator', 'admin', 'manager']), async (req: AuthR
       i++;
     }
 
-    // ✅ NEW: apply client_id in WHERE (fast + correct)
     if (client_id) {
       params.push(client_id);
       where += ` AND t.client_id = $${i}::uuid`;
@@ -512,7 +535,6 @@ router.get('/', requireRole(['operator', 'admin', 'manager']), async (req: AuthR
 
     const r = await query(sql, params);
 
-    // meta must match the same filters (except limit/offset)
     const metaParams = params.slice(0, params.length - 2);
     const metaSql = `
       SELECT
@@ -832,11 +854,7 @@ router.post('/', requireRole(['operator', 'admin', 'manager']), handleCreateFirs
 router.post('/first-weight', requireRole(['operator', 'admin', 'manager']), handleCreateFirstWeight);
 
 // -------------------- COMPLETE HANDLER (shared) --------------------
-// (rest of your file continues unchanged...)
 async function handleCompleteTransaction(req: AuthRequest, res: Response) {
-  // ... UNCHANGED from your original file ...
-  // I’m keeping it as-is to avoid accidental logic changes.
-  // (Your original code continues here.)
   const id = String(req.params.id || '').trim();
   if (!isUuid(id)) return badRequest(res, 'id must be a UUID');
 
@@ -1187,7 +1205,7 @@ async function handleCompleteTransaction(req: AuthRequest, res: Response) {
     const paid_amount = isWalkIn ? total_amount : 0;
     const balance = isWalkIn ? 0 : total_amount;
 
-    let invoiceNumber = genInvoiceNumber(branchCode);
+    let invoiceNumber = await genInvoiceNumber(db);
     let invoiceRow: any = null;
 
     for (let i2 = 0; i2 < 3; i2++) {
@@ -1264,7 +1282,7 @@ async function handleCompleteTransaction(req: AuthRequest, res: Response) {
         break;
       } catch (e: any) {
         if (e?.code === '23505') {
-          invoiceNumber = genInvoiceNumber(branchCode);
+          invoiceNumber = await genInvoiceNumber(db);
           continue;
         }
         throw e;
@@ -1395,4 +1413,3 @@ router.patch('/:id/complete', requireRole(['operator', 'admin', 'manager']), han
 router.post('/:id/complete', requireRole(['operator', 'admin', 'manager']), handleCompleteTransaction);
 
 export default router;
-

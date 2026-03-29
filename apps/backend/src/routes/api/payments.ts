@@ -128,7 +128,7 @@ function parsePaidAt(v: unknown): Date | null {
 const ALLOWED_METHODS = new Set(['cash', 'check', 'bank_transfer', 'credit_card', 'other']);
 
 /**
- * ✅ Admin branch behavior:
+ * Admin branch behavior:
  * Admin derives branch from invoice unless ?branch_id= is explicitly provided.
  */
 async function getBranchForInvoiceAccess(req: AuthRequest, res: Response, invoiceId: string): Promise<string | null> {
@@ -164,7 +164,7 @@ async function getBranchForInvoiceAccess(req: AuthRequest, res: Response, invoic
   const own = await resolveUserBranchId(userId);
   if (!own) return forbidden(res, 'User is not assigned to any branch'), null;
 
-  // ✅ Explicitly validate invoice belongs to own branch for cleaner behavior
+  // Explicitly validate invoice belongs to own branch for cleaner behavior
   const ok = await query(`SELECT 1 FROM invoices WHERE id = $1 AND branch_id = $2 LIMIT 1`, [invoiceId, own]);
   if (ok.rows.length === 0) return notFound(res, 'Invoice not found'), null;
 
@@ -235,12 +235,12 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 
 /**
  * POST /api/payments
- * ✅ record payment (admin/manager only)
+ * record payment (admin/manager only)
  * Flow:
  * - lock invoice FOR UPDATE
  * - insert payment
  * - update invoice paid_amount/balance/status
- * - ✅ if credit client: decrease clients.current_balance AND customers.current_balance
+ * - if credit client: decrease clients.current_balance AND customers.current_balance
  *
  * IMPORTANT: idempotency on (branch_id, reference_number) if reference_number is provided and non-empty.
  */
@@ -346,7 +346,7 @@ router.post('/', requireRole(['admin', 'manager']), async (req: AuthRequest, res
         paymentRow = p.rows[0];
         break;
       } catch (e: any) {
-        // ✅ Critical: differentiate unique constraint failures
+        // Critical: differentiate unique constraint failures
         if (e?.code === '23505') {
           const constraint = String(e?.constraint || '');
 
@@ -411,7 +411,7 @@ router.post('/', requireRole(['admin', 'manager']), async (req: AuthRequest, res
       [newPaid, newBal, newStatus, invoice_id, branchId]
     );
 
-    // ✅ Reduce balances for credit customers (client_id exists)
+    // Reduce balances for credit customers (client_id exists)
     const clientId = inv.client_id ? String(inv.client_id) : '';
     if (clientId && isUuid(clientId)) {
       await db.query(
@@ -424,7 +424,7 @@ router.post('/', requireRole(['admin', 'manager']), async (req: AuthRequest, res
         [amount, clientId, branchId]
       );
 
-      // ✅ Also reduce CUSTOMER balance (global)
+      // Also reduce CUSTOMER balance (global)
       let customerId = inv.customer_id ? String(inv.customer_id) : '';
       if (!customerId) {
         const cr = await db.query(`SELECT customer_id FROM clients WHERE id = $1 AND branch_id = $2 LIMIT 1`, [

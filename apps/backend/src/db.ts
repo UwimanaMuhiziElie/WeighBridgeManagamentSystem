@@ -1,7 +1,5 @@
+// apps/backend/src/db.ts
 import pg from 'pg';
-// import dotenv from 'dotenv';
-
-// dotenv.config();
 
 const { Pool } = pg;
 
@@ -10,11 +8,10 @@ if (!DATABASE_URL) {
   throw new Error('DATABASE_URL is not set');
 }
 
-const sslEnabled =
-  process.env.DATABASE_SSL === 'true' || process.env.NODE_ENV === 'production';
 
+const sslEnabled = String(process.env.DATABASE_SSL || '').toLowerCase() === 'true';
 const rejectUnauthorized =
-  process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false';
+  String(process.env.DATABASE_SSL_REJECT_UNAUTHORIZED || 'true').toLowerCase() === 'true';
 
 export const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -25,7 +22,7 @@ export const pool = new Pool({
 });
 
 pool.on('error', (err) => {
-  // This means an idle client had an unexpected error; safest is to crash + restart in prod
+  // Idle client had unexpected error; in prod it's often safest to crash+restart
   console.error('Unexpected error on idle PG client', {
     message: err.message,
     name: err.name,
